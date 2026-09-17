@@ -1,0 +1,4 @@
+google-adk
+requests
+litellm
+pytest

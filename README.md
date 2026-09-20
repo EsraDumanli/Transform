@@ -7,7 +7,7 @@ I'm still very much learning this space. Every project in here started as "can a
 ## What's here
 
 - **[Home Security Risk Assessment](Transform/Home%20Security%20Risk%20Assessment)** — A multi-agent home network and device security scanner built on Google's ADK. Six sub-agents each own a narrow slice (device posture, LAN discovery, CVE cross-referencing against the NVD, ...) and roll up into one inspectable 0–100 risk score with a prioritized patch plan. Read-only and scoped to my own LAN by design — it never guesses credentials or touches anything outside my own subnet.
-- **[Job Search Agent](Transform-addition/job-search-agent)** — A self-hosted tool that reads a resume, checks target companies' career pages using Claude's web search, and scores matches on a dashboard. Runs on demand or on a schedule; every clone starts completely empty, and nothing is shared between instances.
+- **[Job Search Agent](job-search-agent)** — A self-hosted tool that reads a resume, checks target companies' career pages using Claude's web search, and scores matches on a dashboard. Runs on demand or on a schedule; every clone starts completely empty, and nothing is shared between instances.
 - **[SASE Agentic AIOps](Transform/sase_agentic_aiops)** — A small pipeline pairing real ML anomaly detectors (Isolation Forest, a time-series baseline, DBSCAN peer clustering) with an agent that correlates their output into incidents, triages severity, and proposes an action — gated behind human approval before anything mutates a real system. Closest to what I think about all day at work.
 
 More will land here as I keep poking at this. Expect it to stay a little messy and a lot experimental — this is a workbench, not a portfolio.

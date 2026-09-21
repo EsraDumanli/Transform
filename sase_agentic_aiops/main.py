@@ -66,8 +66,16 @@ def main():
         for s in incident.signals:
             print(f"   [{s.source}] score={s.score:.2f} :: {s.detail}")
 
-        print("4. TRIAGE ORCHESTRATOR")
+        print("4. TRIAGE")
         rec = triage_fn(incident)
+        if rec.specialist_findings:
+            print("   4a. SPECIALISTS (identity | network | policy -- each scoped to one domain, run in parallel)")
+            for f in rec.specialist_findings:
+                print(f"       [{f.domain:<8}] risk={f.risk_level:<6} {f.summary}")
+                if f.key_signals:
+                    print(f"                    signals: {', '.join(f.key_signals)}")
+            print("   4b. ORCHESTRATOR -- cross-domain correlation")
+            print(f"       root_cause: {rec.root_cause}")
         print(f"   tier={rec.tier}  confidence={rec.confidence:.2f}  source={rec.source}")
         print(f"   rationale: {rec.rationale}")
         print(f"   suggested_action: {rec.suggested_action}  "

@@ -1,3 +1,0 @@
-numpy>=1.26
-scikit-learn>=1.4
-anthropic>=0.40   # optional -- only needed for the LLM triage path (set ANTHROPIC_API_KEY to use it)

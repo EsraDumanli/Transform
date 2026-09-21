@@ -8,7 +8,8 @@ telemetry.py    synthetic access logs, daily usage series, per-user profiles
 detectors.py    Isolation Forest / time-series baseline / DBSCAN peer clustering
 correlator.py   groups flags from all three detectors into per-entity incidents
 tools.py        read-only lookups (identity/network/policy) + gated actions
-agent.py        the triage orchestrator -- rule-based, or a real Claude tool-use loop
+agent.py        rule-based triage, or 3 least-privileged specialists (identity/network/
+                policy) + a tool-less orchestrator that correlates their findings
 main.py         runs the pipeline end to end and prints the trace
 ```
 
@@ -43,40 +44,57 @@ By default, `agent.py` uses `rule_based_triage()` -- plain scoring logic, no API
 deterministic. That's the **crawl** rung from the guide's practice ladder: get the plumbing and the
 gate right before handing decisions to a model.
 
-Set an API key and the same pipeline switches the orchestrator onto a real Claude tool-use loop
-(the **walk** rung) with no other code changes:
+Set an API key and the same pipeline switches the orchestrator onto a real multi-agent triage --
+the **walk/run** rungs -- with no other code changes:
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
 python main.py
 ```
 
-`LLMTriageAgent` in `agent.py` gives Claude the three *read-only* lookup tools
-(`identity_lookup`, `network_lookup`, `policy_lookup`) and nothing else -- it can investigate, but
-it can't act. It has to end on a structured JSON recommendation, which `main.py` then runs through
-the exact same gate as the rule-based path. Compare the `rationale` text between the two modes on
-the same incident; it's the fastest way to see what an LLM-orchestrated agent adds over a fixed
-scoring function -- and where it can go wrong (an ungrounded rationale, an over-confident tier) in
-a way the rule-based version structurally can't.
+`agent.py` implements this as four agents, not one:
 
-## Extending it (the "run" rung)
+- **Three specialists** (`IdentitySpecialist`, `NetworkSpecialist`, `PolicySpecialist`), each a
+  separate Claude tool-use loop scoped to exactly one read-only lookup tool. This is least privilege
+  by construction, not by prompt instruction: an `IdentitySpecialist`'s API call only ever carries
+  `IDENTITY_TOOL_SCHEMAS` in its `tools=` list, so the model has no way to request a network or
+  policy lookup -- the tool isn't in the request. They run concurrently (`ThreadPoolExecutor`) since
+  their lookups are independent.
+- **One orchestrator** with *no tools at all*. It receives all three specialists' findings --
+  each blind to the other two domains and to any data outside its own -- and has to correlate them
+  into a single cross-domain `root_cause` plus a tier/action recommendation. `main.py` prints the
+  specialist findings and the orchestrator's root-cause synthesis as separate trace steps (4a/4b) so
+  you can see the correlation happen, not just the final answer.
+
+Neither the specialists nor the orchestrator can act -- all four only ever produce a lookup result
+or a structured `Recommendation`, which `main.py` then runs through the exact same human-approval
+gate as the rule-based path. Compare the `rationale`/`root_cause` text against the rule-based
+version on the same incident; it's the fastest way to see what correlating independent,
+domain-scoped investigations adds over both a fixed scoring function and a single agent that just
+calls all three tools itself -- and where it can still go wrong (an ungrounded root cause, a tier
+call backed by only one domain) in a way the rule-based version structurally can't.
+
+## Extending it further
 
 Ideas, roughly in order of how much they change:
 
 1. **Change the gate threshold.** `tools.ACTION_NEEDS_APPROVAL` decides what's gated. Try making
    `open_ticket` gated too, or add a fourth action that's never allowed to auto-execute regardless
    of tier.
-2. **Add a fourth telemetry source and detector.** Extend `telemetry.py` and `detectors.py` without
-   touching `agent.py` or `main.py` -- if that's easy, the perception/reasoning split is doing its
-   job.
-3. **Split triage into a real handoff.** Right now one orchestrator calls all three lookup tools
-   itself. The guide's reference architecture has three separate specialist agents (identity,
-   network, policy) that the orchestrator delegates to. Try building that with the
-   [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk/overview)'s subagents, so each
-   specialist only ever sees the one tool it needs.
+2. **Add a fourth telemetry source, detector, and specialist.** Extend `telemetry.py` and
+   `detectors.py` without touching the correlator, then give the new domain its own specialist in
+   `agent.py` (a lookup tool in `tools.py`, a `SpecialistAgent` subclass, and one more entry in
+   `MultiAgentTriage._specialists`) -- if that's a small, additive change, the domain-scoping
+   pattern is doing its job.
+3. **Move the specialists onto the Claude Agent SDK.** They're currently hand-rolled tool-use loops
+   using the raw `anthropic` client. Try rebuilding them as real
+   [subagents](https://code.claude.com/docs/en/agent-sdk/subagents) with SDK-level
+   [permission scoping](https://code.claude.com/docs/en/agent-sdk/permissions) instead of the
+   per-instance `tools=` list doing the enforcement.
 4. **Harden it.** Before this touches anything real: rate limits on the action executor, an audit
-   log that persists (not just prints), a kill switch, and permission scoping per the Agent SDK's
-   [permissions](https://code.claude.com/docs/en/agent-sdk/permissions) model.
+   log that persists (not just prints), a kill switch, and a timeout/circuit-breaker around the
+   specialist and orchestrator calls (e.g. what should `main.py` do if one specialist fails but the
+   other two succeed?).
 
 ## What's simulated vs. real
 

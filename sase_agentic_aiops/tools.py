@@ -58,7 +58,7 @@ READ_TOOLS = {
     "policy_lookup": policy_lookup,
 }
 
-# JSON schemas for the walk-rung Claude tool-use loop (see agent.py).
+# JSON schemas for the Claude tool-use loops (see agent.py).
 READ_TOOL_SCHEMAS = [
     {
         "name": "identity_lookup",
@@ -88,6 +88,20 @@ READ_TOOL_SCHEMAS = [
         },
     },
 ]
+
+# Per-domain slices of the above, one tool each. This is what makes the
+# specialist agents in agent.py least-privileged by construction: an
+# IdentitySpecialist's Anthropic API call only ever carries
+# IDENTITY_TOOL_SCHEMAS, so the model has no way to request a network or
+# policy lookup -- the tool isn't in the request, not just discouraged by
+# a prompt.
+IDENTITY_TOOLS = {"identity_lookup": identity_lookup}
+NETWORK_TOOLS = {"network_lookup": network_lookup}
+POLICY_TOOLS = {"policy_lookup": policy_lookup}
+
+IDENTITY_TOOL_SCHEMAS = [s for s in READ_TOOL_SCHEMAS if s["name"] == "identity_lookup"]
+NETWORK_TOOL_SCHEMAS = [s for s in READ_TOOL_SCHEMAS if s["name"] == "network_lookup"]
+POLICY_TOOL_SCHEMAS = [s for s in READ_TOOL_SCHEMAS if s["name"] == "policy_lookup"]
 
 
 # ---- Mutating actions. Gated -- never call these from the triage path. ----

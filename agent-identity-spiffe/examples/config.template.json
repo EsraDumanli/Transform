@@ -36,12 +36,13 @@
       "label_selector_keys": ["app.kubernetes.io/name"]
     },
     "processes": {
-      "proc_root": "/proc",
+      "method": "<\"ps\" on macOS, \"procfs\" on Linux>",
+      "proc_root": "/proc (only used with procfs)",
       "include": ["<process name glob, e.g. python*>"],
       "cmdline_contains": ["<optional substring, e.g. google.adk>"]
     },
     "docker": {
-      "socket": "/var/run/docker.sock",
+      "socket": "<macOS Docker Desktop: often ~/.docker/run/docker.sock; Linux: /var/run/docker.sock>",
       "timeout_seconds": 5,
       "label_selector_keys": ["com.docker.compose.service"]
     },

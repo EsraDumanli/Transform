@@ -37,7 +37,7 @@ spiffe_identity/
   discovery/
     ai_agents.py       A2A agent cards + MCP configs on disk, A2A /.well-known probes
     kubernetes.py      pods via the K8s REST API (read-only)
-    processes.py       Linux procfs, filtered by your include patterns
+    processes.py       Linux procfs or ps (macOS), filtered by your include patterns
     docker.py          containers via the Docker Engine socket (read-only)
     network.py         TCP connect scan of ranges you list
   policy.py            rule-based ID assignment
@@ -49,12 +49,12 @@ examples/
   config.template.json every option, with <placeholders> you fill in
   manifests/           DEMO FIXTURES: one A2A agent card, one MCP config (made up)
 scripts/               setup.sh (venv + install), demo.sh (full flow)
-tests/                 45 tests, no network access needed
+tests/                 49 tests, no network access needed
 ```
 
 ## Quickstart (demo, localhost only)
 
-You need Python 3.10 or newer.
+You need Python 3.10 or newer. Check with `python3 --version`. `setup.sh` checks too, and tells you what to do if yours is too old.
 
 ```bash
 cd agent-identity-spiffe
@@ -101,6 +101,13 @@ agent-discovery jwt --config examples/demo.config.json --spiffe-id spiffe://demo
 
 `python -m spiffe_identity.cli ...` and `python -m spiffe_identity.server ...` work without installing, as long as you run them from this folder.
 
+## macOS notes
+
+- **Python:** the `python3` that ships with macOS may be too old (3.9). Install a newer one with `brew install python@3.12`, then run `PYTHON=python3.12 ./scripts/setup.sh`.
+- **Processes source:** use `"method": "ps"`. The `"procfs"` method reads Linux `/proc`, which macOS doesn't have. With `ps`, processes you don't own show up but may be missing an executable path, and the tool warns you when it can't read one.
+- **Docker Desktop:** the socket is often `~/.docker/run/docker.sock` rather than `/var/run/docker.sock`. Check Docker Desktop's settings for the path on your machine. `~` is expanded in the config.
+- **TLS to other hosts:** if you installed Python from python.org and A2A probes or the Kubernetes source fail with `CERTIFICATE_VERIFY_FAILED`, run the `Install Certificates.command` that came with that Python. The SPIFFE server and its client aren't affected, because they trust the server's own `bundle.pem`.
+
 ## Using it on your own systems
 
 Copy `examples/config.template.json` and fill in every `<...>` value. Delete the discovery sources you don't want. The design rule throughout is that **nothing is guessed**:
@@ -116,7 +123,7 @@ Copy `examples/config.template.json` and fill in every `<...>` value. Delete the
 |---|---|---|---|
 | `ai_agents` | A2A agent cards (`agent-card.json`, `agent.json`), MCP configs (`.mcp.json`, `mcp.json`, `claude_desktop_config.json`), A2A `/.well-known/agent-card.json` on URLs you list | `ai:a2a-card:<path or url>`, `ai:agent-name:…`, `ai:mcp-config:<path>`, `ai:mcp-server:…` | read access to the dirs |
 | `kubernetes` | `GET /api/v1/namespaces/<ns>/pods` | `k8s:ns:…`, `k8s:sa:…`, `k8s:pod-label:k:v` | a token with `list pods` |
-| `processes` | `/proc/<pid>/{comm,exe,cmdline,status}` (Linux only) | `unix:uid:…`, `unix:comm:…`, `unix:path:…` | same user or root to read `exe` |
+| `processes` | `"method": "procfs"`: `/proc/<pid>/…` (Linux). `"method": "ps"`: `ps -axww` output (macOS, Linux) | `unix:uid:…`, `unix:comm:…`, `unix:path:…` | same user or root to read `exe` |
 | `docker` | `GET /containers/json` on the Engine socket | `docker:image_id:…`, `docker:label:k:v` | access to the socket |
 | `network` | TCP connect to the CIDRs and ports you list (no payload, no credentials) | `net:addr:ip:port` | authorization to scan that range |
 

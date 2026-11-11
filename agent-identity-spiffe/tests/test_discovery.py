@@ -114,15 +114,65 @@ def test_processes_with_fake_procfs(tmp_path):
     proc(11, "python3", 1000, "python3 manage.py runserver")
     proc(12, "bash", 0, "bash")
     (tmp_path / "self").mkdir()
-    ws, warns = Processes({"proc_root": str(tmp_path), "include": ["python*"], "cmdline_contains": ["google.adk"]}).discover()
+    ws, warns = Processes({"method": "procfs", "proc_root": str(tmp_path), "include": ["python*"], "cmdline_contains": ["google.adk"]}).discover()
     assert [w.name for w in ws] == ["python3[10]"]
     assert "unix:uid:1000" in ws[0].selectors
     assert any("executable path" in w for w in warns)  # fake procfs has no exe link
 
 
-def test_processes_requires_include():
-    with pytest.raises(ConfigError):
-        Processes({"proc_root": "/proc"})
+def test_processes_requires_method_include_and_proc_root():
+    with pytest.raises(ConfigError, match="method"):
+        Processes({"proc_root": "/proc", "include": ["x"]})
+    with pytest.raises(ConfigError, match="include"):
+        Processes({"method": "ps"})
+    with pytest.raises(ConfigError, match="proc_root"):
+        Processes({"method": "procfs", "include": ["x"]})
+
+
+def test_processes_procfs_missing_root_mentions_ps(tmp_path):
+    with pytest.raises(OSError, match='"ps"'):
+        Processes({"method": "procfs", "proc_root": str(tmp_path / "nope"), "include": ["x"]}).discover()
+
+
+def test_processes_ps_macos_output():
+    # Shaped like macOS ps: comm is the full executable path and may contain spaces.
+    outputs = {
+        "pid=,uid=,comm=": (
+            "  101   501 /opt/homebrew/Cellar/python@3.12/3.12.7/bin/python3.12\n"
+            "  102   501 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome\n"
+            "  103     0 /usr/libexec/logd\n"
+            "  104   501 python3\n"
+        ),
+        "pid=,args=": (
+            "  101 python3.12 -m google.adk.cli run agent\n"
+            "  102 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome\n"
+            "  103 /usr/libexec/logd\n"
+            "  104 python3 -m google.adk.cli web\n"
+        ),
+    }
+    p = Processes({"method": "ps", "include": ["python*", "Google Chrome"], "cmdline_contains": ["google.adk"]},
+                  run_ps=lambda f: outputs[f])
+    ws, warns = p.discover()
+    by_pid = {w.attributes["pid"]: w for w in ws}
+    assert sorted(by_pid) == ["101", "104"]  # Chrome matches include but not cmdline_contains
+    assert by_pid["101"].attributes["comm"] == "python3.12"
+    assert "unix:path:/opt/homebrew/Cellar/python@3.12/3.12.7/bin/python3.12" in by_pid["101"].selectors
+    assert "exe" not in by_pid["104"].attributes
+    assert any("absolute executable path" in w for w in warns)
+
+
+def test_processes_ps_on_this_machine():
+    import shutil
+    if not shutil.which("ps"):
+        pytest.skip("no ps binary")
+    ws, _ = Processes({"method": "ps", "include": ["python*", "Python*"]}).discover()  # macOS framework builds run as "Python"
+    assert any(w.attributes["pid"] == str(__import__("os").getpid()) for w in ws)
+
+
+def test_build_resolves_docker_socket_home():
+    d = discovery.build({"docker": {"socket": "~/.docker/run/docker.sock", "timeout_seconds": 1}},
+                        resolve=lambda p: str(Path(p).expanduser()))[0]
+    assert d.socket == str(Path.home() / ".docker/run/docker.sock")
 
 
 def test_docker():

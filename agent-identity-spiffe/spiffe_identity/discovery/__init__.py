@@ -17,7 +17,11 @@ SOURCES = {
 
 
 # Settings that hold file paths, resolved relative to the config file.
-_PATH_KEYS = {"ai_agents": ("manifest_dirs",), "kubernetes": ("token_file", "ca_file")}
+_PATH_KEYS = {
+    "ai_agents": ("manifest_dirs",),
+    "kubernetes": ("token_file", "ca_file"),
+    "docker": ("socket",),  # Docker Desktop on macOS often uses ~/.docker/run/docker.sock
+}
 
 
 def build(cfg: dict, resolve=lambda p: p) -> list[Discoverer]:

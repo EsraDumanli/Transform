@@ -55,6 +55,11 @@ class Client:
     def create_entry(self, entry: dict) -> dict:
         return self._call("POST", "/v1/entries", entry)
 
+    def delete_entry(self, entry_id: str) -> dict:
+        if not entry_id or not entry_id.isalnum():
+            raise ServerError("invalid entry id")
+        return self._call("DELETE", f"/v1/entries/{entry_id}")
+
     def list_entries(self) -> list[dict]:
         return self._call("GET", "/v1/entries")
 

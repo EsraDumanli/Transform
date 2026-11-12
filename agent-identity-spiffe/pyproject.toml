@@ -22,5 +22,8 @@ agent-discovery = "spiffe_identity.cli:main"
 [tool.setuptools.packages.find]
 include = ["spiffe_identity*"]
 
+[tool.setuptools.package-data]
+spiffe_identity = ["portal_static/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

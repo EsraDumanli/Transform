@@ -1,0 +1,46 @@
+{
+  "_comment": "DEMO config: runs entirely on localhost against the made-up fixtures in examples/manifests. 'demo.local' is a placeholder trust domain, not a recommendation.",
+  "trust_domain": "demo.local",
+
+  "server": {
+    "data_dir": "../.data/demo",
+    "listen_host": "127.0.0.1",
+    "listen_port": 8443,
+    "tls_dns_names": ["localhost"],
+    "tls_ip_addresses": ["127.0.0.1"],
+    "ca_ttl_hours": 24,
+    "x509_svid_ttl_minutes": 60,
+    "jwt_svid_ttl_minutes": 5
+  },
+
+  "client": {
+    "server_url": "https://127.0.0.1:8443",
+    "bundle_file": "../.data/demo/bundle.pem",
+    "admin_token_env": "SPIFFE_ADMIN_TOKEN"
+  },
+
+  "discovery": {
+    "ai_agents": {"manifest_dirs": ["manifests"], "max_depth": 3}
+  },
+
+  "policy": {
+    "rules": [
+      {
+        "name": "a2a-agents",
+        "match": {"source": "ai-agents", "kind": "ai-agent"},
+        "spiffe_id_path": "/ai-agent/{name}"
+      },
+      {
+        "name": "mcp-servers-with-transport",
+        "match": {"source": "ai-agents", "kind": "mcp-server", "attributes": {"transport": "*"}},
+        "spiffe_id_path": "/mcp/{attr.transport}/{name}"
+      }
+    ]
+  },
+
+  "llm": {
+    "enabled": false,
+    "model": "claude-opus-5-5",
+    "send_attributes": ["protocol", "transport", "agent_name", "server_name", "skills"]
+  }
+}

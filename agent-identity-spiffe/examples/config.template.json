@@ -1,0 +1,71 @@
+{
+  "_comment": "TEMPLATE: every <...> value must be filled in by you. Delete any discovery source you do not want; a source that is not listed is never run.",
+  "trust_domain": "<your-trust-domain, e.g. lab.yourname.dev>",
+
+  "server": {
+    "data_dir": "<directory for the CA key, bundle and entries>",
+    "listen_host": "<address to bind, e.g. 127.0.0.1>",
+    "listen_port": 8443,
+    "tls_dns_names": ["<name clients use to reach the server>"],
+    "tls_ip_addresses": [],
+    "ca_ttl_hours": "<int>",
+    "x509_svid_ttl_minutes": "<int>",
+    "jwt_svid_ttl_minutes": "<int>"
+  },
+
+  "client": {
+    "server_url": "<https://host:port>",
+    "bundle_file": "<server data_dir>/bundle.pem",
+    "admin_token_env": "SPIFFE_ADMIN_TOKEN"
+  },
+
+  "discovery": {
+    "ai_agents": {
+      "manifest_dirs": ["<dir with A2A agent cards / MCP configs>"],
+      "max_depth": 4,
+      "a2a_urls": ["<base URL of an A2A agent you run>"],
+      "timeout_seconds": 5
+    },
+    "kubernetes": {
+      "in_cluster": false,
+      "api_server": "<https://your-api-server:6443>",
+      "token_file": "<path to a token with list-pods permission>",
+      "ca_file": "<path to the API server CA>",
+      "namespaces": ["<namespace>"],
+      "timeout_seconds": 10,
+      "label_selector_keys": ["app.kubernetes.io/name"]
+    },
+    "processes": {
+      "method": "<\"ps\" on macOS, \"procfs\" on Linux>",
+      "proc_root": "/proc (only used with procfs)",
+      "include": ["<process name glob, e.g. python*>"],
+      "cmdline_contains": ["<optional substring, e.g. google.adk>"]
+    },
+    "docker": {
+      "socket": "<macOS Docker Desktop: often ~/.docker/run/docker.sock; Linux: /var/run/docker.sock>",
+      "timeout_seconds": 5,
+      "label_selector_keys": ["com.docker.compose.service"]
+    },
+    "network": {
+      "cidrs": ["<a range you own, e.g. 192.168.1.0/24>"],
+      "ports": [8080],
+      "timeout_ms": 300,
+      "max_hosts": 256,
+      "concurrency": 64
+    }
+  },
+
+  "policy": {
+    "rules": [
+      {"name": "a2a-agents", "match": {"kind": "ai-agent"}, "spiffe_id_path": "/ai-agent/{name}"},
+      {"name": "k8s-by-sa", "match": {"kind": "k8s-pod"}, "spiffe_id_path": "/k8s/ns/{attr.namespace}/sa/{attr.service_account}"},
+      {"name": "containers-by-service", "match": {"kind": "container", "attributes": {"label.com.docker.compose.service": "*"}}, "spiffe_id_path": "/container/{attr.label.com.docker.compose.service}"}
+    ]
+  },
+
+  "llm": {
+    "enabled": false,
+    "model": "claude-opus-5-5",
+    "send_attributes": ["<attribute keys you are OK sending to the Anthropic API>"]
+  }
+}

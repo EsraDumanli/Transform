@@ -1,0 +1,3 @@
+cryptography>=42
+# Optional: only needed when llm.enabled is true
+anthropic>=2.8

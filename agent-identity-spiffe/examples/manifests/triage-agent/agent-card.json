@@ -1,0 +1,9 @@
+{
+  "name": "Ticket Triage Agent",
+  "description": "DEMO FIXTURE: a made-up A2A agent card so the demo has something to discover.",
+  "url": "https://agents.demo.invalid/triage",
+  "version": "0.1.0",
+  "protocolVersion": "0.3.0",
+  "provider": {"organization": "Demo Org"},
+  "skills": [{"id": "classify-ticket", "name": "Classify ticket"}, {"id": "route-ticket", "name": "Route ticket"}]
+}

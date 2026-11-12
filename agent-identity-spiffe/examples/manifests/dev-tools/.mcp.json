@@ -1,0 +1,8 @@
+{
+  "_comment": "DEMO FIXTURE: made-up MCP config. 'notes-search' has no command or URL, so the demo shows an unassigned workload.",
+  "mcpServers": {
+    "filesystem": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp/demo"]},
+    "ticket-api": {"type": "http", "url": "https://mcp.demo.invalid/tickets"},
+    "notes-search": {}
+  }
+}

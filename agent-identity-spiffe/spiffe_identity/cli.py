@@ -4,6 +4,7 @@
   python -m spiffe_identity.cli plan     --config config.json [--json]
   python -m spiffe_identity.cli apply    --config config.json --approver "you" [--issue-dir out/] [--approve-all]
   python -m spiffe_identity.cli entries  --config config.json
+  python -m spiffe_identity.cli portal   --config config.json --approver "you"
   python -m spiffe_identity.cli jwt      --config config.json --spiffe-id spiffe://td/x --audience my-service
   python -m spiffe_identity.cli verify-x509 --cert svid.pem --bundle bundle.pem
   python -m spiffe_identity.cli verify-jwt  --token-file t.jwt --jwks jwks.json --audience my-service
@@ -17,17 +18,9 @@ import os
 import sys
 from pathlib import Path
 
-from . import approval, ca, config as config_mod, discovery
-from .classifier import ClaudeProposer, LLMError
+from . import approval, ca, config as config_mod, discovery, pipeline
 from .client import Client, ServerError
-from .policy import Policy, PolicyError, Proposal
-
-
-def _discover(cfg: dict) -> list[discovery.Result]:
-    dcfg = config_mod.section(cfg, "discovery")
-    if not dcfg:
-        raise config_mod.ConfigError("discovery: enable at least one source")
-    return discovery.run(discovery.build(dcfg, lambda p: config_mod.resolve_path(cfg, p)))
+from .policy import PolicyError, Proposal
 
 
 def _print_results(results: list[discovery.Result]) -> None:
@@ -39,26 +32,14 @@ def _print_results(results: list[discovery.Result]) -> None:
 
 
 def _plan(cfg: dict, use_llm: bool | None) -> tuple[list[discovery.Result], list[Proposal]]:
-    results = _discover(cfg)
-    policy = Policy.from_config(cfg["trust_domain"], config_mod.section(cfg, "policy"))
-    seen, proposals = set(), []
-    for r in results:
-        for w in r.workloads:
-            if w.key() in seen:
-                continue
-            seen.add(w.key())
-            proposals.append(policy.assign(w))
-    llm_cfg = cfg.get("llm") or {}
-    enabled = llm_cfg.get("enabled", False) if use_llm is None else use_llm
-    unassigned = [p for p in proposals if not p.assignable]
-    if enabled and unassigned:
-        try:
-            ClaudeProposer(cfg["trust_domain"], llm_cfg).propose(unassigned)
-        except LLMError as e:
-            print(f"LLM step skipped: {e}", file=sys.stderr)
-        except Exception as e:  # noqa: BLE001 - API/network errors leave workloads unassigned
-            print(f"LLM step failed ({type(e).__name__}: {e}); those workloads stay unassigned", file=sys.stderr)
-    return results, proposals
+    scan = pipeline.plan(cfg, use_llm)
+    for note in scan.notes:
+        print(note, file=sys.stderr)
+    path = pipeline.scan_file(cfg)
+    if path:
+        pipeline.save_snapshot(path, pipeline.snapshot(cfg, scan))
+        print(f"scan saved to {path}", file=sys.stderr)
+    return scan.results, scan.proposals
 
 
 def _print_plan(proposals: list[Proposal]) -> None:
@@ -73,7 +54,7 @@ def _print_plan(proposals: list[Proposal]) -> None:
 
 
 def cmd_discover(args, cfg) -> int:
-    results = _discover(cfg)
+    results = pipeline.discover(cfg)
     if args.json:
         print(json.dumps([{**r.__dict__, "workloads": [w.to_dict() for w in r.workloads]} for r in results], indent=2))
     else:
@@ -140,6 +121,27 @@ def cmd_jwt(args, cfg) -> int:
     return 0
 
 
+def cmd_portal(args, cfg) -> int:
+    import logging
+
+    from .portal import Portal, PortalError, serve
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
+    client = Client.from_config(cfg, lambda p: config_mod.resolve_path(cfg, p))
+    try:
+        portal = Portal(cfg, args.approver, client, use_llm=args.llm)
+    except PortalError as e:
+        raise config_mod.ConfigError(str(e)) from e
+    httpd = serve(portal)
+    host = f"[{portal.host}]" if ":" in portal.host else portal.host
+    print(f"Agent Identity Portal: http://{host}:{portal.port}/  (Ctrl+C to stop)")
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
 def cmd_verify_x509(args) -> int:
     sid = ca.verify_x509_svid(Path(args.cert).read_bytes(), Path(args.bundle).read_bytes())
     print(f"valid X.509-SVID for {sid}")
@@ -175,6 +177,11 @@ def main(argv=None) -> int:
             p.add_argument("--issue-dir", help="also mint an X.509-SVID per approved identity into this directory")
             p.add_argument("--approve-all", action="store_true", help="DEMO ONLY: approve every proposal without prompting")
     with_config(sub.add_parser("entries", help="list registration entries on the server"))
+    p = with_config(sub.add_parser("portal", help="local web portal: workloads, attributes, identities; approve and revoke"))
+    p.add_argument("--approver", required=True, help="your name, recorded on every entry approved in the portal")
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--llm", dest="llm", action="store_true", default=None, help="force the Claude step on for scans")
+    g.add_argument("--no-llm", dest="llm", action="store_false", help="force the Claude step off for scans")
     p = with_config(sub.add_parser("jwt", help="mint a JWT-SVID for a registered SPIFFE ID"))
     p.add_argument("--spiffe-id", required=True)
     p.add_argument("--audience", required=True, action="append", help="repeat for several audiences")
@@ -193,7 +200,7 @@ def main(argv=None) -> int:
         if args.cmd == "verify-jwt":
             return cmd_verify_jwt(args)
         cfg = config_mod.load(args.config)
-        return {"discover": cmd_discover, "plan": cmd_plan, "apply": cmd_apply, "entries": cmd_entries, "jwt": cmd_jwt}[args.cmd](args, cfg)
+        return {"discover": cmd_discover, "plan": cmd_plan, "apply": cmd_apply, "entries": cmd_entries, "jwt": cmd_jwt, "portal": cmd_portal}[args.cmd](args, cfg)
     except (config_mod.ConfigError, discovery.ConfigError, PolicyError, ServerError, ca.CAError, OSError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2

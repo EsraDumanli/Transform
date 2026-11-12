@@ -43,13 +43,16 @@ spiffe_identity/
   policy.py            rule-based ID assignment
   classifier.py        optional Claude proposer for workloads no rule matched
   approval.py          the human approval gate
-  cli.py               agent-discovery: discover / plan / apply / entries / jwt / verify-*
+  pipeline.py          discover -> policy -> LLM, and the saved-scan snapshot (shared by CLI + portal)
+  portal.py            local web portal (localhost only): view, scan, approve, revoke
+  portal_static/       the portal page (HTML, CSS, JS; no external downloads)
+  cli.py               agent-discovery: discover / plan / apply / portal / entries / jwt / verify-*
 examples/
   demo.config.json     localhost demo against the made-up fixtures below
   config.template.json every option, with <placeholders> you fill in
   manifests/           DEMO FIXTURES: one A2A agent card, one MCP config (made up)
-scripts/               setup.sh (venv + install), demo.sh (full flow)
-tests/                 49 tests, no network access needed
+scripts/               setup.sh (venv + install), demo.sh (full flow in the terminal), portal.sh (server + portal)
+tests/                 64 tests, no network access needed
 ```
 
 ## Quickstart (demo, localhost only)
@@ -100,6 +103,43 @@ agent-discovery jwt --config examples/demo.config.json --spiffe-id spiffe://demo
 ```
 
 `python -m spiffe_identity.cli ...` and `python -m spiffe_identity.server ...` work without installing, as long as you run them from this folder.
+
+## The portal
+
+A local web page that shows every discovered workload, its attributes and selectors, the identity proposed for it, and whether that identity is registered. You can scan, approve and revoke from it.
+
+```bash
+./scripts/portal.sh "Your Name"
+```
+
+This starts the SPIFFE server and the portal for the demo config, then opens http://127.0.0.1:8765/ in your browser. The name you pass is recorded as `approved_by` on every identity you approve. Press Ctrl+C to stop both.
+
+With your own config, run the server yourself, then:
+
+```bash
+agent-discovery portal --config yours.json --approver "Your Name"
+```
+
+Your config needs a `portal` section:
+
+```json
+"portal": {"listen_host": "127.0.0.1", "listen_port": 8765, "scan_file": "<where the last scan is saved>"}
+```
+
+What it shows and does:
+
+- **On load:** the last saved scan. `plan`, `apply` and the portal's **Scan now** button all save to `portal.scan_file`. It also shows the entries currently on the SPIFFE server.
+- **Workload rows:** click one to see all its attributes, selectors, which rule (or the LLM) chose the identity and why, and who approved it.
+- **Approve:** registers the proposed identity on the server. It asks you to confirm first, and flags LLM proposals and weak IP:port selectors.
+- **Revoke:** deletes the registration entry, so the server stops issuing SVIDs for it. SVIDs already issued stay valid until they expire, because this learning server has no revocation list.
+- **Server down:** if the SPIFFE server is unreachable, registration status shows as **Unknown** and the page says why, instead of guessing.
+
+There's no login, so the portal protects itself in other ways:
+
+- It refuses to start on anything but a loopback address (`127.0.0.1`, `::1`, `localhost`), so other machines can't reach it.
+- Requests must name that address in the `Host` header. This blocks DNS rebinding, where another website points its own hostname at your machine.
+- Scan, approve and revoke need a random per-run token that's embedded in the page and sent as a header. Other websites open in your browser can't read it, which blocks cross-site request forgery.
+- All workload data is inserted as text, never HTML, and a strict Content Security Policy blocks inline and external scripts. Agent cards and labels are untrusted input.
 
 ## macOS notes
 

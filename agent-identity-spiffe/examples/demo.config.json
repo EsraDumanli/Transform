@@ -19,6 +19,12 @@
     "admin_token_env": "SPIFFE_ADMIN_TOKEN"
   },
 
+  "portal": {
+    "listen_host": "127.0.0.1",
+    "listen_port": 8765,
+    "scan_file": "../.data/demo/last-scan.json"
+  },
+
   "discovery": {
     "ai_agents": {"manifest_dirs": ["manifests"], "max_depth": 3}
   },

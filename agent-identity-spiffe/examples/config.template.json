@@ -19,6 +19,12 @@
     "admin_token_env": "SPIFFE_ADMIN_TOKEN"
   },
 
+  "portal": {
+    "listen_host": "127.0.0.1",
+    "listen_port": "<free port, e.g. 8765>",
+    "scan_file": "<where plan/apply/the portal save the last scan>"
+  },
+
   "discovery": {
     "ai_agents": {
       "manifest_dirs": ["<dir with A2A agent cards / MCP configs>"],

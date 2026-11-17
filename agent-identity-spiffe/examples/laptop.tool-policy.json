@@ -1,0 +1,46 @@
+{
+  "_comment": "Tool policy for examples/my-laptop.config.json: deny by default. Allows reading Claude Desktop and Cursor config folders plus the demo fixtures, listing processes with ps, the local SPIFFE server, and demo.local identities under /ai-agent, /mcp and /agent/job-search-agent. Kubernetes, Docker, network scans, A2A probes and the LLM are blocked.",
+  "version": 1,
+  "default": "deny",
+  "trace": {
+    "file": "../.data/demo/trace.jsonl"
+  },
+  "tools": {
+    "discovery.ai_agents.read_manifests": {
+      "paths": [
+        "~/Library/Application Support/Claude",
+        "~/.cursor",
+        "manifests"
+      ]
+    },
+    "discovery.processes.read": {
+      "methods": [
+        "ps"
+      ]
+    },
+    "server.connect": {
+      "urls": [
+        "https://127.0.0.1:8443"
+      ]
+    },
+    "server.entries.list": {},
+    "server.entries.create": {
+      "spiffe_id_prefixes": [
+        "spiffe://demo.local/ai-agent/",
+        "spiffe://demo.local/mcp/",
+        "spiffe://demo.local/agent/job-search-agent"
+      ]
+    },
+    "server.entries.delete": {},
+    "server.svid.x509": {
+      "spiffe_id_prefixes": [
+        "spiffe://demo.local/ai-agent/",
+        "spiffe://demo.local/mcp/",
+        "spiffe://demo.local/agent/job-search-agent"
+      ]
+    },
+    "portal.scan": {},
+    "portal.approve": {},
+    "portal.revoke": {}
+  }
+}

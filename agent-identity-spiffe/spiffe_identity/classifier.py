@@ -68,8 +68,9 @@ class LLMError(RuntimeError):
 
 
 class ClaudeProposer:
-    def __init__(self, trust_domain: str, cfg: dict, client=None):
+    def __init__(self, trust_domain: str, cfg: dict, gate, client=None):
         self.trust_domain = trust_domain
+        self.gate = gate
         self.model = cfg.get("model") or DEFAULT_MODEL
         self.send_attributes = cfg.get("send_attributes")
         if not isinstance(self.send_attributes, list):
@@ -100,7 +101,19 @@ class ClaudeProposer:
         if not unassigned:
             return unassigned
         payload = json.dumps(self._payload(unassigned), indent=2)
-        response = self.client.beta.messages.create(
+        api_url = str(getattr(self.client, "base_url", "") or "https://api.anthropic.com")
+        with self.gate.action("llm.propose_ids", model=self.model, api_url=api_url,
+                              send_attributes=self.send_attributes, workloads=len(unassigned)) as summary:
+            response = self._call(payload)
+            usage = getattr(response, "usage", None)
+            summary.update({
+                "served_by": getattr(response, "model", ""), "stop_reason": getattr(response, "stop_reason", ""),
+                "input_tokens": getattr(usage, "input_tokens", None), "output_tokens": getattr(usage, "output_tokens", None),
+            })
+        return self._apply(response, unassigned)
+
+    def _call(self, payload: str):
+        return self.client.beta.messages.create(
             model=self.model,
             max_tokens=16000,
             betas=["server-side-fallback-2026-07-01"],
@@ -109,6 +122,8 @@ class ClaudeProposer:
             output_config={"format": {"type": "json_schema", "schema": OUTPUT_SCHEMA}},
             messages=[{"role": "user", "content": f"Trust domain: {self.trust_domain}\n\nWorkloads:\n{payload}"}],
         )
+
+    def _apply(self, response, unassigned: list[Proposal]) -> list[Proposal]:
         if response.stop_reason == "refusal":
             raise LLMError("the model declined this request; workloads stay unassigned")
         if response.stop_reason == "max_tokens":

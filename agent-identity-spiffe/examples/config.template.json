@@ -1,5 +1,6 @@
 {
   "_comment": "TEMPLATE: every <...> value must be filled in by you. Delete any discovery source you do not want; a source that is not listed is never run.",
+  "tool_policy_file": "<path to your tool policy, e.g. tool-policy.json>",
   "trust_domain": "<your-trust-domain, e.g. lab.yourname.dev>",
 
   "server": {

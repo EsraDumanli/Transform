@@ -1,0 +1,90 @@
+{
+  "_comment": "TEMPLATE tool policy. Deny by default: keep only the tools you want and fill in every <...> limit. A tool you delete is blocked. A listed tool without its limits, or an unknown tool name, stops the program at startup.",
+  "version": 1,
+  "default": "deny",
+  "trace": {
+    "file": "<path to trace.jsonl, relative to this file>"
+  },
+  "tools": {
+    "discovery.ai_agents.read_manifests": {
+      "paths": [
+        "<folder the scanner may read>"
+      ]
+    },
+    "discovery.ai_agents.probe_a2a": {
+      "origins": [
+        "<https://agent-host:port>"
+      ]
+    },
+    "discovery.kubernetes.list_pods": {
+      "api_servers": [
+        "<https://api-server:6443>"
+      ],
+      "namespaces": [
+        "<namespace>"
+      ]
+    },
+    "discovery.docker.list_containers": {
+      "sockets": [
+        "<e.g. ~/.docker/run/docker.sock>"
+      ]
+    },
+    "discovery.processes.read": {
+      "methods": [
+        "<ps and/or procfs>"
+      ],
+      "proc_roots": [
+        "/proc (only needed for procfs)"
+      ]
+    },
+    "discovery.network.tcp_connect": {
+      "cidrs": [
+        "<a range you own, e.g. 192.168.1.0/24>"
+      ],
+      "ports": [
+        8080
+      ],
+      "max_hosts": 256
+    },
+    "llm.propose_ids": {
+      "models": [
+        "claude-opus-5-5"
+      ],
+      "api_origins": [
+        "https://api.anthropic.com"
+      ],
+      "max_calls_per_run": 1,
+      "send_attributes": [
+        "<attribute names allowed to leave the machine>"
+      ]
+    },
+    "server.connect": {
+      "urls": [
+        "<https://spiffe-server:8443>"
+      ]
+    },
+    "server.entries.list": {},
+    "server.entries.create": {
+      "spiffe_id_prefixes": [
+        "<spiffe://your-td/allowed-prefix/>"
+      ]
+    },
+    "server.entries.delete": {},
+    "server.svid.x509": {
+      "spiffe_id_prefixes": [
+        "<spiffe://your-td/allowed-prefix/>"
+      ]
+    },
+    "server.svid.jwt": {
+      "spiffe_id_prefixes": [
+        "<spiffe://your-td/allowed-prefix/>"
+      ],
+      "audiences": [
+        "<audience>"
+      ]
+    },
+    "portal.scan": {},
+    "portal.approve": {},
+    "portal.revoke": {}
+  }
+}

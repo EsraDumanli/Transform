@@ -6,6 +6,7 @@
   python -m spiffe_identity.cli entries  --config config.json
   python -m spiffe_identity.cli portal   --config config.json --approver "you"
   python -m spiffe_identity.cli jwt      --config config.json --spiffe-id spiffe://td/x --audience my-service
+  python -m spiffe_identity.cli trace    --config config.json [--denied] [--trace-id ID] [--tool server.]
   python -m spiffe_identity.cli verify-x509 --cert svid.pem --bundle bundle.pem
   python -m spiffe_identity.cli verify-jwt  --token-file t.jwt --jwks jwks.json --audience my-service
 """
@@ -20,6 +21,8 @@ from pathlib import Path
 
 from . import approval, ca, config as config_mod, discovery, pipeline
 from .client import Client, ServerError
+from .toolpolicy import ToolDenied, ToolPolicy, ToolPolicyError, gate_from_config
+from .trace import TraceError
 from .policy import PolicyError, Proposal
 
 
@@ -31,8 +34,8 @@ def _print_results(results: list[discovery.Result]) -> None:
             print(f"  warning: {w}")
 
 
-def _plan(cfg: dict, use_llm: bool | None) -> tuple[list[discovery.Result], list[Proposal]]:
-    scan = pipeline.plan(cfg, use_llm)
+def _plan(cfg: dict, gate, use_llm: bool | None) -> tuple[list[discovery.Result], list[Proposal]]:
+    scan = pipeline.plan(cfg, gate, use_llm)
     for note in scan.notes:
         print(note, file=sys.stderr)
     path = pipeline.scan_file(cfg)
@@ -53,8 +56,8 @@ def _print_plan(proposals: list[Proposal]) -> None:
         print(f"  {p.workload.name} ({p.workload.kind}, {p.workload.source}): {'; '.join(p.problems)}")
 
 
-def cmd_discover(args, cfg) -> int:
-    results = pipeline.discover(cfg)
+def cmd_discover(args, cfg, gate) -> int:
+    results = pipeline.discover(cfg, gate)
     if args.json:
         print(json.dumps([{**r.__dict__, "workloads": [w.to_dict() for w in r.workloads]} for r in results], indent=2))
     else:
@@ -65,8 +68,8 @@ def cmd_discover(args, cfg) -> int:
     return 0
 
 
-def cmd_plan(args, cfg) -> int:
-    results, proposals = _plan(cfg, args.llm)
+def cmd_plan(args, cfg, gate) -> int:
+    results, proposals = _plan(cfg, gate, args.llm)
     if args.json:
         print(json.dumps([p.to_dict() for p in proposals], indent=2))
     else:
@@ -75,9 +78,9 @@ def cmd_plan(args, cfg) -> int:
     return 0
 
 
-def cmd_apply(args, cfg) -> int:
-    client = Client.from_config(cfg, lambda p: config_mod.resolve_path(cfg, p))
-    results, proposals = _plan(cfg, args.llm)
+def cmd_apply(args, cfg, gate) -> int:
+    client = Client.from_config(cfg, lambda p: config_mod.resolve_path(cfg, p), gate)
+    results, proposals = _plan(cfg, gate, args.llm)
     _print_results(results)
     _print_plan(proposals)
     approved = approval.gate(proposals, approve_all=args.approve_all)
@@ -109,27 +112,29 @@ def cmd_apply(args, cfg) -> int:
     return 1 if failures else 0
 
 
-def cmd_entries(args, cfg) -> int:
-    client = Client.from_config(cfg, lambda p: config_mod.resolve_path(cfg, p))
+def cmd_entries(args, cfg, gate) -> int:
+    client = Client.from_config(cfg, lambda p: config_mod.resolve_path(cfg, p), gate)
     print(json.dumps(client.list_entries(), indent=2))
     return 0
 
 
-def cmd_jwt(args, cfg) -> int:
-    client = Client.from_config(cfg, lambda p: config_mod.resolve_path(cfg, p))
+def cmd_jwt(args, cfg, gate) -> int:
+    client = Client.from_config(cfg, lambda p: config_mod.resolve_path(cfg, p), gate)
     print(client.jwt_svid(args.spiffe_id, args.audience))
     return 0
 
 
-def cmd_portal(args, cfg) -> int:
+def cmd_portal(args, cfg, gate) -> int:
     import logging
 
     from .portal import Portal, PortalError, serve
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
-    client = Client.from_config(cfg, lambda p: config_mod.resolve_path(cfg, p))
+    console = logging.StreamHandler()
+    console.setFormatter(logging.Formatter("%(asctime)s %(name)s %(message)s"))
+    logging.getLogger().addHandler(console)  # the trace handler is already attached; also show logs here
+    client = Client.from_config(cfg, lambda p: config_mod.resolve_path(cfg, p), gate)
     try:
-        portal = Portal(cfg, args.approver, client, use_llm=args.llm)
+        portal = Portal(cfg, args.approver, client, gate, use_llm=args.llm)
     except PortalError as e:
         raise config_mod.ConfigError(str(e)) from e
     httpd = serve(portal)
@@ -139,6 +144,55 @@ def cmd_portal(args, cfg) -> int:
         httpd.serve_forever()
     except KeyboardInterrupt:
         pass
+    return 0
+
+
+def cmd_trace(args) -> int:
+    from . import trace as trace_mod
+
+    if args.file:
+        path = args.file
+    else:
+        cfg = config_mod.load(args.config)
+        if not cfg.get("tool_policy_file"):
+            raise config_mod.ConfigError("tool_policy_file is required to find the trace file (or pass --file)")
+        path = ToolPolicy.load(config_mod.resolve_path(cfg, cfg["tool_policy_file"])).trace_file
+    if not Path(path).exists():
+        print(f"no trace yet at {path}")
+        return 0
+    events = trace_mod.read_events(path)
+    if args.trace_id:
+        events = [e for e in events if e.get("trace_id", "").startswith(args.trace_id)]
+    if args.tool:
+        events = [e for e in events if e.get("tool", "").startswith(args.tool)]
+    if args.denied:
+        events = [e for e in events if e.get("decision") == "deny"]
+    if args.component:
+        events = [e for e in events if e.get("component") == args.component]
+    if args.last:
+        events = events[-args.last:]
+    if args.json:
+        for e in events:
+            print(json.dumps(e))
+        return 0
+    print(f"trace file: {path}  ({len(events)} event(s) shown)")
+    for e in events:
+        ts = e.get("ts", "")[11:23]
+        tid = (e.get("trace_id") or "")[:8]
+        ev = e.get("event", "")
+        if ev == "action.decision":
+            line = f"{e.get('decision', '').upper():<5} {e.get('tool', '')}  {e.get('reason', '')}  {json.dumps(e.get('args', {}))}"
+        elif ev == "action.result":
+            line = f"{e.get('outcome', ''):<5} {e.get('tool', '')}  {e.get('duration_ms', '')}ms  {json.dumps(e.get('summary', {}))}"
+            if e.get("error"):
+                line += f"  {e['error']}"
+        elif ev in ("run.start", "run.end"):
+            line = f"{ev:<9} {e.get('name', '')}" + (f"  {e.get('status')}  {e.get('duration_ms')}ms" if ev == "run.end" else "")
+        elif ev == "log":
+            line = f"log   {e.get('level', '')} {e.get('logger', '')}: {e.get('message', '')}"
+        else:
+            line = json.dumps(e)
+        print(f"{ts}  {tid}  {e.get('component', ''):<7} {line}")
     return 0
 
 
@@ -185,6 +239,16 @@ def main(argv=None) -> int:
     p = with_config(sub.add_parser("jwt", help="mint a JWT-SVID for a registered SPIFFE ID"))
     p.add_argument("--spiffe-id", required=True)
     p.add_argument("--audience", required=True, action="append", help="repeat for several audiences")
+    p = sub.add_parser("trace", help="show the trace of every action (from the tool policy's trace file)")
+    src = p.add_mutually_exclusive_group(required=True)
+    src.add_argument("--config", help="config whose tool policy names the trace file")
+    src.add_argument("--file", help="read this trace file directly")
+    p.add_argument("--trace-id", help="only this trace (a prefix is enough)")
+    p.add_argument("--tool", help="only this tool (a prefix is enough, e.g. server. or discovery.)")
+    p.add_argument("--component", choices=["agent", "portal", "server"])
+    p.add_argument("--denied", action="store_true", help="only actions the policy denied")
+    p.add_argument("--last", type=int, help="only the last N events")
+    p.add_argument("--json", action="store_true", help="raw JSON lines")
     p = sub.add_parser("verify-x509", help="verify an X.509-SVID against a trust bundle")
     p.add_argument("--cert", required=True)
     p.add_argument("--bundle", required=True)
@@ -199,8 +263,24 @@ def main(argv=None) -> int:
             return cmd_verify_x509(args)
         if args.cmd == "verify-jwt":
             return cmd_verify_jwt(args)
+        if args.cmd == "trace":
+            return cmd_trace(args)
         cfg = config_mod.load(args.config)
-        return {"discover": cmd_discover, "plan": cmd_plan, "apply": cmd_apply, "entries": cmd_entries, "jwt": cmd_jwt, "portal": cmd_portal}[args.cmd](args, cfg)
+        commands = {"discover": cmd_discover, "plan": cmd_plan, "apply": cmd_apply, "entries": cmd_entries,
+                    "jwt": cmd_jwt, "portal": cmd_portal}
+        component = "portal" if args.cmd == "portal" else "agent"
+        gate = gate_from_config(cfg, component, actor=getattr(args, "approver", "") or "")
+        if args.cmd == "portal":  # the portal traces each request as its own run
+            return cmd_portal(args, cfg, gate)
+        with gate.run(f"cli.{args.cmd}", config=str(Path(args.config).resolve())) as tid:
+            print(f"trace id: {tid}", file=sys.stderr)
+            return commands[args.cmd](args, cfg, gate)
+    except BrokenPipeError:  # output piped into e.g. `head`, which closed early
+        sys.stderr.close()
+        return 0
+    except (ToolDenied, ToolPolicyError, TraceError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 3
     except (config_mod.ConfigError, discovery.ConfigError, PolicyError, ServerError, ca.CAError, OSError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2

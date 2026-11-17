@@ -1,5 +1,6 @@
 {
   "_comment": "DEMO config: runs entirely on localhost against the made-up fixtures in examples/manifests. 'demo.local' is a placeholder trust domain, not a recommendation.",
+  "tool_policy_file": "demo.tool-policy.json",
   "trust_domain": "demo.local",
 
   "server": {

@@ -4,6 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.helpers import events, make_gate
+
 from spiffe_identity import approval
 from spiffe_identity.classifier import ClaudeProposer, LLMError
 from spiffe_identity.discovery.base import Workload
@@ -56,12 +58,16 @@ class FakeClient:
         return self._resp
 
 
-def test_llm_requires_explicit_attribute_allowlist():
+LLM_TOOL = {"llm.propose_ids": {"models": ["claude-opus-5-5"], "api_origins": ["https://api.anthropic.com"],
+                                 "max_calls_per_run": 1, "send_attributes": ["image"]}}
+
+
+def test_llm_requires_explicit_attribute_allowlist(tmp_path):
     with pytest.raises(LLMError, match="send_attributes"):
-        ClaudeProposer(TD, {}, client=FakeClient("{}"))
+        ClaudeProposer(TD, {}, make_gate(tmp_path, LLM_TOOL), client=FakeClient("{}"))
 
 
-def test_llm_only_sends_allowlisted_attributes_and_validates():
+def test_llm_only_sends_allowlisted_attributes_and_validates(tmp_path):
     props = [Policy.from_config(TD, RULES).assign(wl("container", "a", image="nginx", cmdline="secret --token=abc")),
              Policy.from_config(TD, RULES).assign(wl("container", "b")),
              Policy.from_config(TD, RULES).assign(wl("container", "c"))]
@@ -71,7 +77,10 @@ def test_llm_only_sends_allowlisted_attributes_and_validates():
         {"index": 2, "insufficient_data": False, "path_segments": ["..", "x"], "confidence": "low", "rationale": "bad"},
     ]}
     client = FakeClient(json.dumps(answer))
-    ClaudeProposer(TD, {"send_attributes": ["image"]}, client=client).propose(props)
+    gate = make_gate(tmp_path, LLM_TOOL)
+    ClaudeProposer(TD, {"send_attributes": ["image"]}, gate, client=client).propose(props)
+    result = [e for e in events(gate) if e["event"] == "action.result"][0]
+    assert result["tool"] == "llm.propose_ids" and result["outcome"] == "ok"
     user_msg = client.sent["messages"][0]["content"]
     assert "nginx" in user_msg and "secret" not in user_msg
     assert props[0].spiffe_id == "spiffe://test.local/container/nginx" and props[0].assigned_by.startswith("llm:")
@@ -79,10 +88,11 @@ def test_llm_only_sends_allowlisted_attributes_and_validates():
     assert props[2].spiffe_id is None and "invalid" in props[2].problems[-1]
 
 
-def test_llm_refusal_is_an_error():
+def test_llm_refusal_is_an_error(tmp_path):
     props = [Policy.from_config(TD, RULES).assign(wl("container"))]
     with pytest.raises(LLMError):
-        ClaudeProposer(TD, {"send_attributes": []}, client=FakeClient("", stop_reason="refusal")).propose(props)
+        ClaudeProposer(TD, {"send_attributes": []}, make_gate(tmp_path, LLM_TOOL),
+                       client=FakeClient("", stop_reason="refusal")).propose(props)
 
 
 def test_approval_gate():

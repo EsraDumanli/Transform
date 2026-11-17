@@ -10,19 +10,27 @@ from __future__ import annotations
 import json
 import os
 import ssl
+import urllib.error
 import urllib.parse
 import urllib.request
 
+from ..toolpolicy import ToolDenied
 from .base import KIND_K8S_POD, ConfigError, Workload
 
 SA_TOKEN = "/var/run/secrets/kubernetes.io/serviceaccount/token"
 SA_CA = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(req.full_url, code, f"redirect to {newurl} refused", headers, fp)
+
+
 class Kubernetes:
     name = "kubernetes"
 
-    def __init__(self, cfg: dict, opener=None):
+    def __init__(self, cfg: dict, gate, opener=None):
+        self.gate = gate
         self.namespaces = cfg.get("namespaces") or []
         self.timeout = cfg.get("timeout_seconds")
         self.label_keys = sorted(cfg.get("label_selector_keys") or [])
@@ -49,7 +57,9 @@ class Kubernetes:
             resp = self._opener(req, timeout=self.timeout)
         else:
             ctx = ssl.create_default_context(cafile=self.ca_file)
-            resp = urllib.request.urlopen(req, timeout=self.timeout, context=ctx)
+            # No redirects: the bearer token must only ever go to the allowed API server.
+            opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx), _NoRedirect())
+            resp = opener.open(req, timeout=self.timeout)
         with resp:
             return json.loads(resp.read())
 
@@ -60,7 +70,12 @@ class Kubernetes:
         for ns in self.namespaces:
             path = "/api/v1/pods" if ns == "*" else f"/api/v1/namespaces/{urllib.parse.quote(ns, safe='')}/pods"
             try:
-                data = self._get(self.api_server + path, token)
+                with self.gate.action("discovery.kubernetes.list_pods", api_server=self.api_server, namespace=ns) as summary:
+                    data = self._get(self.api_server + path, token)
+                    summary["pods"] = len(data.get("items", []))
+            except ToolDenied as e:
+                warns.append(f"kubernetes: {e}")
+                continue
             except Exception as e:  # noqa: BLE001
                 warns.append(f"kubernetes: namespace {ns}: {e}")
                 continue

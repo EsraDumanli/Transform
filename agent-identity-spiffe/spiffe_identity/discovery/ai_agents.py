@@ -20,6 +20,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from ..toolpolicy import ToolDenied
 from .base import KIND_AI_AGENT, KIND_MCP_SERVER, ConfigError, Workload
 
 A2A_NAMES = {"agent-card.json", "agent.json"}
@@ -31,12 +32,13 @@ WELL_KNOWN = ("/.well-known/agent-card.json", "/.well-known/agent.json")
 class AIAgents:
     name = "ai-agents"
 
-    def __init__(self, cfg: dict, opener=urllib.request.urlopen):
+    def __init__(self, cfg: dict, gate, opener=None):
         self.dirs = cfg.get("manifest_dirs") or []
         self.max_depth = cfg.get("max_depth")
         self.urls = cfg.get("a2a_urls") or []
         self.timeout = cfg.get("timeout_seconds")
-        self._open = opener
+        self.gate = gate
+        self._open = opener or _gated_opener(gate).open
         if not self.dirs and not self.urls:
             raise ConfigError("ai-agents: set manifest_dirs and/or a2a_urls; nothing is scanned by default")
         if self.dirs and not (isinstance(self.max_depth, int) and self.max_depth > 0):
@@ -48,12 +50,21 @@ class AIAgents:
         out: list[Workload] = []
         warns: list[str] = []
         for d in self.dirs:
-            ws, w = self._walk(Path(d).expanduser())
+            root = Path(d).expanduser()
+            try:
+                with self.gate.action("discovery.ai_agents.read_manifests", path=str(root)) as summary:
+                    ws, w = self._walk(root)
+                    summary["workloads"] = len(ws)
+            except ToolDenied as e:
+                warns.append(f"ai-agents: {e}")
+                continue
             out += ws
             warns += w
         for u in self.urls:
             try:
                 out.append(self._probe(u))
+            except ToolDenied as e:
+                warns.append(f"ai-agents: {e}")
             except Exception as e:  # noqa: BLE001
                 warns.append(f"ai-agents: no agent card at {u}: {e}")
         return out, warns
@@ -74,6 +85,14 @@ class AIAgents:
             dirnames[:] = [] if depth >= self.max_depth - 1 else [d for d in dirnames if d not in SKIP_DIRS]
             for fn in filenames:
                 p = Path(dirpath) / fn
+                if fn not in A2A_NAMES and fn not in MCP_NAMES:
+                    continue
+                try:
+                    # Every manifest read is checked: a symlink can't reach outside the allowed paths.
+                    self.gate.check("discovery.ai_agents.read_manifests", path=str(p))
+                except ToolDenied as e:
+                    warns.append(f"ai-agents: {e}")
+                    continue
                 try:
                     if fn in A2A_NAMES:
                         w = parse_a2a_file(p)
@@ -93,8 +112,12 @@ class AIAgents:
         for path in WELL_KNOWN:
             url = base + path
             try:
-                with self._open(url, timeout=self.timeout) as resp:
-                    body = resp.read(1 << 20)
+                with self.gate.action("discovery.ai_agents.probe_a2a", url=url) as summary:
+                    with self._open(url, timeout=self.timeout) as resp:
+                        body = resp.read(1 << 20)
+                    summary["bytes"] = len(body)
+            except ToolDenied:
+                raise
             except (urllib.error.URLError, OSError) as e:
                 last = str(e)
                 continue
@@ -107,6 +130,21 @@ class AIAgents:
                 return _card_workload(card, url)
             last = f"{url} did not return an A2A agent card"
         raise LookupError(last)
+
+
+class _GatedRedirect(urllib.request.HTTPRedirectHandler):
+    """Follow a redirect only if the tool policy allows the new URL too."""
+
+    def __init__(self, gate):
+        self.gate = gate
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        self.gate.check("discovery.ai_agents.probe_a2a", url=newurl, redirected_from=req.full_url)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _gated_opener(gate):
+    return urllib.request.build_opener(_GatedRedirect(gate))
 
 
 def _looks_like_card(c) -> bool:

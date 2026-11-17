@@ -21,7 +21,8 @@ from .base import KIND_NETWORK_SERVICE, ConfigError, Workload
 class Network:
     name = "network"
 
-    def __init__(self, cfg: dict, connect=None):
+    def __init__(self, cfg: dict, gate, connect=None):
+        self.gate = gate
         self.cidrs = cfg.get("cidrs") or []
         self.ports = cfg.get("ports") or []
         self.timeout_ms = cfg.get("timeout_ms")
@@ -49,8 +50,13 @@ class Network:
 
     def discover(self) -> tuple[list[Workload], list[str]]:
         targets = [(h, p) for h in self.hosts for p in self.ports]
-        with ThreadPoolExecutor(max_workers=self.concurrency) as pool:
-            results = list(pool.map(lambda t: self._connect(*t), targets))
+        # One policy decision per scan (ranges, ports, size); the scan only touches those targets.
+        with self.gate.action("discovery.network.tcp_connect", cidrs=self.cidrs, ports=self.ports,
+                              max_hosts=self.max_hosts) as summary:
+            with ThreadPoolExecutor(max_workers=self.concurrency) as pool:
+                results = list(pool.map(lambda t: self._connect(*t), targets))
+            summary["targets"] = len(targets)
+            summary["open"] = sum(results)
         out = []
         for (h, p), is_open in zip(targets, results):
             if is_open:

@@ -24,7 +24,8 @@ class _UnixHTTPConnection(http.client.HTTPConnection):
 class Docker:
     name = "docker"
 
-    def __init__(self, cfg: dict, fetch=None):
+    def __init__(self, cfg: dict, gate, fetch=None):
+        self.gate = gate
         self.socket = cfg.get("socket") or ""
         self.timeout = cfg.get("timeout_seconds")
         self.label_keys = sorted(cfg.get("label_selector_keys") or [])
@@ -48,7 +49,10 @@ class Docker:
 
     def discover(self) -> tuple[list[Workload], list[str]]:
         out = []
-        for c in self._fetch():
+        with self.gate.action("discovery.docker.list_containers", socket=self.socket) as summary:
+            containers = self._fetch()
+            summary["containers"] = len(containers)
+        for c in containers:
             names = c.get("Names") or []
             name = names[0].lstrip("/") if names else c.get("Id", "")
             labels = c.get("Labels") or {}

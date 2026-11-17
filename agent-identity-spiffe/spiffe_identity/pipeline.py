@@ -16,6 +16,7 @@ from pathlib import Path
 from . import config as config_mod, discovery
 from .classifier import ClaudeProposer, LLMError
 from .policy import Policy, Proposal
+from .toolpolicy import ToolDenied
 
 SNAPSHOT_VERSION = 1
 
@@ -28,15 +29,15 @@ class Scan:
     scanned_at: str = field(default_factory=lambda: dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"))
 
 
-def discover(cfg: dict) -> list[discovery.Result]:
+def discover(cfg: dict, gate) -> list[discovery.Result]:
     dcfg = config_mod.section(cfg, "discovery")
     if not dcfg:
         raise config_mod.ConfigError("discovery: enable at least one source")
-    return discovery.run(discovery.build(dcfg, lambda p: config_mod.resolve_path(cfg, p)))
+    return discovery.run(discovery.build(dcfg, gate, lambda p: config_mod.resolve_path(cfg, p)))
 
 
-def plan(cfg: dict, use_llm: bool | None = None) -> Scan:
-    results = discover(cfg)
+def plan(cfg: dict, gate, use_llm: bool | None = None) -> Scan:
+    results = discover(cfg, gate)
     policy = Policy.from_config(cfg["trust_domain"], config_mod.section(cfg, "policy"))
     seen, proposals = set(), []
     for r in results:
@@ -51,7 +52,9 @@ def plan(cfg: dict, use_llm: bool | None = None) -> Scan:
     unassigned = [p for p in proposals if not p.assignable]
     if enabled and unassigned:
         try:
-            ClaudeProposer(cfg["trust_domain"], llm_cfg).propose(unassigned)
+            ClaudeProposer(cfg["trust_domain"], llm_cfg, gate).propose(unassigned)
+        except ToolDenied as e:
+            notes.append(f"LLM step {e}")
         except LLMError as e:
             notes.append(f"LLM step skipped: {e}")
         except Exception as e:  # noqa: BLE001 - API/network errors leave workloads unassigned

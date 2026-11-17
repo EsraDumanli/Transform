@@ -47,6 +47,8 @@ from importlib import resources
 
 from . import config as config_mod, pipeline
 from .client import Client, ServerError
+from .toolpolicy import ToolDenied, ToolGate
+from .trace import TraceError
 
 log = logging.getLogger("portal")
 MAX_BODY = 16 * 1024
@@ -73,8 +75,8 @@ def check_loopback(host: str) -> None:
 class Portal:
     """Request handling, independent of the HTTP plumbing (so it is easy to test)."""
 
-    def __init__(self, cfg: dict, approver: str, client: Client | None, use_llm: bool | None = None,
-                 token: str | None = None, plan=pipeline.plan):
+    def __init__(self, cfg: dict, approver: str, client: Client | None, gate: ToolGate,
+                 use_llm: bool | None = None, token: str | None = None, plan=pipeline.plan):
         if not approver.strip():
             raise PortalError("--approver is required: it is recorded on every entry approved from the portal")
         p = config_mod.section(cfg, "portal")
@@ -86,6 +88,7 @@ class Portal:
             raise PortalError("portal.scan_file is required (where the last scan is saved)")
         self.cfg, self.approver, self.client, self.use_llm = cfg, approver.strip(), client, use_llm
         self.token = token or secrets.token_urlsafe(32)
+        self.gate = gate
         self._plan = plan
         self._scan_lock = threading.Lock()
         self.allowed_hosts = self._allowed_hosts()
@@ -103,7 +106,7 @@ class Portal:
             return None, "no SPIFFE server client configured"
         try:
             return self.client.list_entries(), ""
-        except ServerError as e:
+        except (ServerError, ToolDenied) as e:
             return None, str(e)
 
     def state(self) -> dict:
@@ -131,8 +134,10 @@ class Portal:
         if not self._scan_lock.acquire(blocking=False):
             raise PortalError("a scan is already running")
         try:
-            result = self._plan(self.cfg, self.use_llm)
-            pipeline.save_snapshot(self.scan_path, pipeline.snapshot(self.cfg, result))
+            with self.gate.action("portal.scan") as summary:
+                result = self._plan(self.cfg, self.gate, self.use_llm)
+                pipeline.save_snapshot(self.scan_path, pipeline.snapshot(self.cfg, result))
+                summary["workloads"] = len(result.proposals)
         finally:
             self._scan_lock.release()
         return self.state()
@@ -149,17 +154,20 @@ class Portal:
         if self.client is None:
             raise PortalError("no SPIFFE server client configured")
         w = match["workload"]
-        entry = self.client.create_entry({
-            "spiffe_id": match["spiffe_id"], "selectors": w["selectors"], "source": w["source"],
-            "assigned_by": match["assigned_by"], "approved_by": self.approver, "rationale": match.get("rationale", ""),
-        })
+        with self.gate.action("portal.approve", proposal_id=proposal_id, spiffe_id=match["spiffe_id"]) as summary:
+            entry = self.client.create_entry({
+                "spiffe_id": match["spiffe_id"], "selectors": w["selectors"], "source": w["source"],
+                "assigned_by": match["assigned_by"], "approved_by": self.approver, "rationale": match.get("rationale", ""),
+            })
+            summary["entry_id"] = entry.get("id")
         log.info("approved %s for %s (entry %s)", match["spiffe_id"], w["name"], entry.get("id"))
         return self.state()
 
     def revoke(self, entry_id: str) -> dict:
         if self.client is None:
             raise PortalError("no SPIFFE server client configured")
-        self.client.delete_entry(entry_id)
+        with self.gate.action("portal.revoke", entry_id=entry_id):
+            self.client.delete_entry(entry_id)
         log.info("revoked entry %s", entry_id)
         return self.state()
 
@@ -170,7 +178,19 @@ class Portal:
         return html.replace("__PORTAL_TOKEN__", self.token).encode()
 
     def handle(self, method: str, path: str, headers, body: bytes) -> tuple[int, str, bytes]:
+        try:
+            return self._handle(method, path, headers, body)
+        except TraceError as e:
+            log.error("refusing request, trace not writable: %s", e)
+            return _json(503, {"error": "the portal cannot write its trace file; refusing to act"})
+
+    def _deny(self, what: str, reason: str, path: str) -> None:
+        self.gate.writer.emit("action.decision", tool=what, decision="deny", reason=reason,
+                              args={"path": path}, actor=self.approver)
+
+    def _handle(self, method: str, path: str, headers, body: bytes) -> tuple[int, str, bytes]:
         if headers.get("Host", "") not in self.allowed_hosts:
+            self._deny("portal.request", f"unexpected Host header {headers.get('Host', '')!r}", path)
             return _json(421, {"error": "unexpected Host header"})
         if method == "GET" and path in ("/", "/index.html"):
             return 200, "text/html; charset=utf-8", self.page()
@@ -178,12 +198,14 @@ class Portal:
             name, ctype = STATIC_ASSETS[path]
             return 200, ctype, _static(name)
         if method == "GET" and path == "/api/state":
-            return _json(200, self.state())
+            with self.gate.run("portal.view"):
+                return _json(200, self.state())
         if method != "POST" or not path.startswith("/api/"):
             return _json(404, {"error": "not found"})
 
         # Every action needs the page's token in a header and a JSON body.
         if not hmac.compare_digest(headers.get("X-Portal-Token", "").encode(), self.token.encode()):
+            self._deny("portal.request", "missing or invalid portal token", path)
             return _json(403, {"error": "missing or invalid portal token; reload the page"})
         if not headers.get("Content-Type", "").startswith("application/json"):
             return _json(415, {"error": "expected application/json"})
@@ -194,13 +216,18 @@ class Portal:
         except ValueError:
             return _json(400, {"error": "body must be a JSON object"})
 
+        action = {"/api/scan": "scan", "/api/approve": "approve", "/api/revoke": "revoke"}.get(path)
+        if action is None:
+            return _json(404, {"error": "not found"})
         try:
-            if path == "/api/scan":
-                return _json(200, self.scan())
-            if path == "/api/approve":
-                return _json(200, self.approve(str(req.get("proposal_id", ""))))
-            if path == "/api/revoke":
+            with self.gate.run(f"portal.{action}"):
+                if action == "scan":
+                    return _json(200, self.scan())
+                if action == "approve":
+                    return _json(200, self.approve(str(req.get("proposal_id", ""))))
                 return _json(200, self.revoke(str(req.get("entry_id", ""))))
+        except ToolDenied as e:
+            return _json(403, {"error": str(e)})
         except PortalError as e:
             return _json(409, {"error": str(e)})
         except ServerError as e:

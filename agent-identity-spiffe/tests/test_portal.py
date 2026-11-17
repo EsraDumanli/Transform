@@ -6,12 +6,22 @@ from pathlib import Path
 
 import pytest
 
+from tests.helpers import events, make_gate
+
 from spiffe_identity import pipeline, server
 from spiffe_identity.client import Client
 from spiffe_identity.portal import Portal, PortalError, check_loopback, serve
 
 EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
 TOKEN = "t" * 40
+PORTAL_TOOLS = {
+    "discovery.ai_agents.read_manifests": {"paths": [str(EXAMPLES)]},
+    "portal.scan": {}, "portal.approve": {}, "portal.revoke": {},
+}
+
+
+def pgate(tmp_path, tools=None):
+    return make_gate(tmp_path, PORTAL_TOOLS if tools is None else tools, "portal", "Esra")
 
 
 def make_cfg(tmp_path, port=8765, host="127.0.0.1"):
@@ -65,17 +75,17 @@ def test_accepts_loopback(host):
 def test_requires_approver_and_scan_file(tmp_path):
     cfg = make_cfg(tmp_path)
     with pytest.raises(PortalError, match="approver"):
-        Portal(cfg, "  ", FakeClient())
+        Portal(cfg, "  ", FakeClient(), pgate(tmp_path))
     del cfg["portal"]["scan_file"]
     with pytest.raises(PortalError, match="scan_file"):
-        Portal(cfg, "me", FakeClient())
+        Portal(cfg, "me", FakeClient(), pgate(tmp_path))
     cfg = make_cfg(tmp_path, host="0.0.0.0")
     with pytest.raises(PortalError, match="loopback"):
-        Portal(cfg, "me", FakeClient())
+        Portal(cfg, "me", FakeClient(), pgate(tmp_path))
 
 
 def test_host_header_and_token_checks(tmp_path):
-    portal = Portal(make_cfg(tmp_path), "me", FakeClient(), token=TOKEN)
+    portal = Portal(make_cfg(tmp_path), "me", FakeClient(), pgate(tmp_path), token=TOKEN)
     # DNS rebinding: a foreign Host header is refused, even for reads.
     assert portal.handle("GET", "/api/state", H({"Host": "evil.example:8765"}), b"")[0] == 421
     assert portal.handle("GET", "/", H({"Host": "127.0.0.1:9999"}), b"")[0] == 421
@@ -90,13 +100,13 @@ def test_host_header_and_token_checks(tmp_path):
 
 
 def test_state_before_any_scan(tmp_path):
-    state = Portal(make_cfg(tmp_path), "me", FakeClient()).state()
+    state = Portal(make_cfg(tmp_path), "me", FakeClient(), pgate(tmp_path)).state()
     assert state["scan"] is None and state["scan_error"] == "" and state["entries"] == []
 
 
 def test_scan_approve_revoke_flow(tmp_path):
     client = FakeClient()
-    portal = Portal(make_cfg(tmp_path), "Esra", client, token=TOKEN)
+    portal = Portal(make_cfg(tmp_path), "Esra", client, pgate(tmp_path), token=TOKEN)
     status, _, body = portal.handle("POST", "/api/scan", headers(), b"{}")
     assert status == 200
     state = json.loads(body)
@@ -123,8 +133,9 @@ def test_scan_approve_revoke_flow(tmp_path):
 
 def test_snapshot_ids_are_stable_and_domain_checked(tmp_path):
     cfg = make_cfg(tmp_path)
-    s1 = pipeline.snapshot(cfg, pipeline.plan(cfg, use_llm=False))
-    s2 = pipeline.snapshot(cfg, pipeline.plan(cfg, use_llm=False))
+    g = pgate(tmp_path)
+    s1 = pipeline.snapshot(cfg, pipeline.plan(cfg, g, use_llm=False))
+    s2 = pipeline.snapshot(cfg, pipeline.plan(cfg, g, use_llm=False))
     assert [p["id"] for p in s1["proposals"]] == [p["id"] for p in s2["proposals"]]
     path = str(tmp_path / "s.json")
     pipeline.save_snapshot(path, s1)
@@ -139,7 +150,7 @@ def test_server_unreachable_is_reported_not_hidden(tmp_path):
             from spiffe_identity.client import ServerError
             raise ServerError("connection refused")
 
-    state = Portal(make_cfg(tmp_path), "me", Down()).state()
+    state = Portal(make_cfg(tmp_path), "me", Down(), pgate(tmp_path)).state()
     assert state["entries"] is None and "connection refused" in state["entries_error"]
 
 
@@ -153,11 +164,17 @@ def test_end_to_end_over_http_with_real_server(tmp_path):
 
     server.ThreadingHTTPServer = AnyPort
     try:
-        httpd, _ = server.build(cfg, TOKEN)
+        httpd, _ = server.build(cfg, TOKEN, make_gate(tmp_path / "srv", {
+            "server.entries.list": {}, "server.entries.delete": {},
+            "server.entries.create": {"spiffe_id_prefixes": ["spiffe://demo.local/"]},
+        }, "server"))
     finally:
         server.ThreadingHTTPServer = orig
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    client = Client(f"https://127.0.0.1:{httpd.server_address[1]}", str(tmp_path / "data" / "bundle.pem"), TOKEN)
+    url = f"https://127.0.0.1:{httpd.server_address[1]}"
+    gate = pgate(tmp_path, {**PORTAL_TOOLS, "server.connect": {"urls": [url]}, "server.entries.list": {},
+                            "server.entries.delete": {}, "server.entries.create": {"spiffe_id_prefixes": ["spiffe://demo.local/"]}})
+    client = Client(url, str(tmp_path / "data" / "bundle.pem"), TOKEN, gate)
 
     # Find a free port for the portal itself.
     import socket
@@ -165,7 +182,7 @@ def test_end_to_end_over_http_with_real_server(tmp_path):
     s.bind(("127.0.0.1", 0))
     port = s.getsockname()[1]
     s.close()
-    portal = Portal(make_cfg(tmp_path, port=port), "Esra", client)
+    portal = Portal(make_cfg(tmp_path, port=port), "Esra", client, gate)
     phttpd = serve(portal)
     threading.Thread(target=phttpd.serve_forever, daemon=True).start()
     base = f"http://127.0.0.1:{port}"

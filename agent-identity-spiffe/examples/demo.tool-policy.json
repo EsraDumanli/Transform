@@ -1,0 +1,45 @@
+{
+  "_comment": "DEMO tool policy: deny by default. Allows only what the localhost demo needs: reading examples/manifests, talking to the local SPIFFE server, and demo.local identities. Kubernetes, Docker, processes, network scans, A2A probes and the LLM are not listed, so they are blocked.",
+  "version": 1,
+  "default": "deny",
+  "trace": {
+    "file": "../.data/demo/trace.jsonl"
+  },
+  "tools": {
+    "discovery.ai_agents.read_manifests": {
+      "paths": [
+        "manifests"
+      ]
+    },
+    "server.connect": {
+      "urls": [
+        "https://127.0.0.1:8443"
+      ]
+    },
+    "server.entries.list": {},
+    "server.entries.create": {
+      "spiffe_id_prefixes": [
+        "spiffe://demo.local/ai-agent/",
+        "spiffe://demo.local/mcp/"
+      ]
+    },
+    "server.entries.delete": {},
+    "server.svid.x509": {
+      "spiffe_id_prefixes": [
+        "spiffe://demo.local/ai-agent/",
+        "spiffe://demo.local/mcp/"
+      ]
+    },
+    "server.svid.jwt": {
+      "spiffe_id_prefixes": [
+        "spiffe://demo.local/ai-agent/"
+      ],
+      "audiences": [
+        "ticket-api"
+      ]
+    },
+    "portal.scan": {},
+    "portal.approve": {},
+    "portal.revoke": {}
+  }
+}

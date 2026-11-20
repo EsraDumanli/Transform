@@ -44,15 +44,20 @@ spiffe_identity/
   classifier.py        optional Claude proposer for workloads no rule matched
   approval.py          the human approval gate
   pipeline.py          discover -> policy -> LLM, and the saved-scan snapshot (shared by CLI + portal)
+  toolpolicy.py        deny-by-default tool policy: the single gate every action passes through
+  trace.py             the trace file: every decision, result, run and log line as JSON
   portal.py            local web portal (localhost only): view, scan, approve, revoke
   portal_static/       the portal page (HTML, CSS, JS; no external downloads)
   cli.py               agent-discovery: discover / plan / apply / portal / entries / jwt / verify-*
 examples/
   demo.config.json     localhost demo against the made-up fixtures below
+  demo.tool-policy.json   tool policy for the demo (allows only what the demo needs)
+  laptop.tool-policy.json tool policy for scanning your own Mac (see "Tool policy and trace")
+  tool-policy.template.json every tool and limit, with <placeholders>
   config.template.json every option, with <placeholders> you fill in
   manifests/           DEMO FIXTURES: one A2A agent card, one MCP config (made up)
 scripts/               setup.sh (venv + install), demo.sh (full flow in the terminal), portal.sh (server + portal)
-tests/                 64 tests, no network access needed
+tests/                 92 tests, no network access needed
 ```
 
 ## Quickstart (demo, localhost only)
@@ -140,6 +145,94 @@ There's no login, so the portal protects itself in other ways:
 - Requests must name that address in the `Host` header. This blocks DNS rebinding, where another website points its own hostname at your machine.
 - Scan, approve and revoke need a random per-run token that's embedded in the page and sent as a header. Other websites open in your browser can't read it, which blocks cross-site request forgery.
 - All workload data is inserted as text, never HTML, and a strict Content Security Policy blocks inline and external scripts. Agent cards and labels are untrusted input.
+
+## Tool policy and trace
+
+Every action the agent, portal or identity server can take is a **tool**. A separate file, the **tool policy**, lists the tools that are allowed and their limits; **everything else is blocked**. Every action, allowed or denied, is written to one **trace file**.
+
+The config points at the policy:
+
+```json
+"tool_policy_file": "demo.tool-policy.json"
+```
+
+A policy looks like this:
+
+```json
+{
+  "version": 1,
+  "default": "deny",
+  "trace": {"file": "../.data/demo/trace.jsonl"},
+  "tools": {
+    "discovery.ai_agents.read_manifests": {"paths": ["manifests"]},
+    "server.connect": {"urls": ["https://127.0.0.1:8443"]},
+    "server.entries.list": {},
+    "server.entries.create": {"spiffe_id_prefixes": ["spiffe://demo.local/ai-agent/"]}
+  }
+}
+```
+
+### Tools and their required limits
+
+| Tool | Limits (all required unless marked) | Used by |
+|---|---|---|
+| `discovery.ai_agents.read_manifests` | `paths`: folders the scanner may read. Every manifest file is checked too, so a symlink can't reach outside. | agent, portal |
+| `discovery.ai_agents.probe_a2a` | `origins`: e.g. `https://agents.example.com`. Redirects are checked against the same list. | agent, portal |
+| `discovery.kubernetes.list_pods` | `api_servers`, `namespaces`. Redirects are refused, so the token only goes to the listed server. | agent, portal |
+| `discovery.docker.list_containers` | `sockets` | agent, portal |
+| `discovery.processes.read` | `methods` (`ps`, `procfs`), `proc_roots` (needed for `procfs`) | agent, portal |
+| `discovery.network.tcp_connect` | `cidrs` (requested ranges must be inside them), `ports`, `max_hosts` | agent, portal |
+| `llm.propose_ids` | `models`, `api_origins`, `max_calls_per_run`, `send_attributes` (the most that may be sent) | agent, portal |
+| `server.connect` | `urls`: which SPIFFE server the agent may talk to | agent, portal |
+| `server.entries.list`, `server.entries.delete` | none | agent, portal, **server** |
+| `server.entries.create`, `server.svid.x509` | `spiffe_id_prefixes` | agent, portal, **server** |
+| `server.svid.jwt` | `spiffe_id_prefixes`, `audiences` | agent, portal, **server** |
+| `portal.scan`, `portal.approve`, `portal.revoke` | none | portal |
+
+### Rules
+
+- **Fail closed:**
+  - no policy file, an invalid one, or one every user can write to stops the program,
+  - `"default"` must be `"deny"`, so there's no allow-all mode.
+- **Unlisted means blocked:**
+  - a tool missing from the policy is denied, even if the config enables it,
+  - a listed tool without its limits, an unknown tool name or an unknown limit is a startup error, so a typo can't silently change access.
+- **Enforced twice:**
+  - the agent and portal check before they act,
+  - the identity server loads its own copy of the policy and refuses server actions it doesn't allow, with HTTP 403, even for a caller holding the admin token.
+- **One gate:** every action in the code goes through a single function, `ToolGate.check` / `ToolGate.action`.
+
+### The trace file
+
+One JSON line per event, written by the agent, portal and server to the file named in the policy:
+
+| Event | Meaning |
+|---|---|
+| `run.start` / `run.end` | a command, portal action or server request began or ended (with status and duration) |
+| `action.decision` | the policy allowed or denied an action, with the reason and the values it checked |
+| `action.result` | an allowed action finished: `ok` or `error`, duration, and a short summary |
+| `log` | an ordinary log message |
+
+- **Linked across processes:** every event carries a `trace_id`. The agent sends its trace id to the server in an `X-Trace-Id` header, so one `apply` or one portal **Approve** shows up as a single trace across the agent (or portal) and the server.
+- **Never written:** tokens, keys, CSRs, resume text and workload attribute values. Only the facts the policy was checked against (a folder, a host, a SPIFFE ID, a count) go in.
+- **Fail closed:** if the trace can't be written, the action is refused.
+- **Not traced:** the server's public read-only endpoints (`/healthz`, `/v1/bundle`, `/v1/bundle/jwks`) and the offline `verify-*` commands. They aren't tools.
+
+To read the trace:
+
+```bash
+agent-discovery trace --config examples/demo.config.json
+```
+
+```bash
+agent-discovery trace --config examples/demo.config.json --denied
+```
+
+```bash
+agent-discovery trace --config examples/demo.config.json --trace-id cb0001d5
+```
+
+Other filters: `--tool server.`, `--component portal`, `--last 50`, and `--json` for raw lines. Every command also prints its `trace id` when it starts, so you can look that run up afterwards.
 
 ## macOS notes
 

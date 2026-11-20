@@ -24,7 +24,7 @@ _PATH_KEYS = {
 }
 
 
-def build(cfg: dict, resolve=lambda p: p) -> list[Discoverer]:
+def build(cfg: dict, gate, resolve=lambda p: p) -> list[Discoverer]:
     """Build the sources listed under ``discovery`` in the config.
 
     Unknown keys are an error rather than silently ignored, so a typo does not
@@ -44,7 +44,7 @@ def build(cfg: dict, resolve=lambda p: p) -> list[Discoverer]:
                 c[key] = [resolve(v) for v in c[key]]
             elif c.get(key):
                 c[key] = resolve(c[key])
-        out.append(SOURCES[name](c))
+        out.append(SOURCES[name](c, gate))
     return out
 
 

@@ -32,7 +32,8 @@ def _run_ps(fields: str) -> str:
 class Processes:
     name = "processes"
 
-    def __init__(self, cfg: dict, run_ps=_run_ps):
+    def __init__(self, cfg: dict, gate, run_ps=_run_ps):
+        self.gate = gate
         self.method = cfg.get("method") or ""
         self.include = cfg.get("include") or []
         self.cmdline_contains = cfg.get("cmdline_contains") or []
@@ -46,9 +47,10 @@ class Processes:
             raise ConfigError('processes: proc_root is required with method "procfs" (normally "/proc")')
 
     def discover(self) -> tuple[list[Workload], list[str]]:
-        if self.method == "ps":
-            return self._discover_ps()
-        return self._discover_procfs()
+        with self.gate.action("discovery.processes.read", method=self.method, proc_root=self.proc_root) as summary:
+            ws, warns = self._discover_ps() if self.method == "ps" else self._discover_procfs()
+            summary["processes"] = len(ws)
+        return ws, warns
 
     # ---- shared ---------------------------------------------------------------
 

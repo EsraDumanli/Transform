@@ -11,17 +11,17 @@ from spiffe_identity.discovery.network import expand
 EXAMPLES = Path(__file__).resolve().parent.parent / "examples" / "manifests"
 
 
-def test_ai_agents_requires_explicit_targets():
+def test_ai_agents_requires_explicit_targets(gate):
     with pytest.raises(ConfigError):
-        AIAgents({})
+        AIAgents({}, gate)
     with pytest.raises(ConfigError, match="max_depth"):
-        AIAgents({"manifest_dirs": ["."]})
+        AIAgents({"manifest_dirs": ["."]}, gate)
     with pytest.raises(ConfigError, match="timeout"):
-        AIAgents({"a2a_urls": ["http://x"]})
+        AIAgents({"a2a_urls": ["http://x"]}, gate)
 
 
-def test_ai_agents_finds_demo_fixtures():
-    ws, warns = AIAgents({"manifest_dirs": [str(EXAMPLES)], "max_depth": 3}).discover()
+def test_ai_agents_finds_demo_fixtures(gate):
+    ws, warns = AIAgents({"manifest_dirs": [str(EXAMPLES)], "max_depth": 3}, gate).discover()
     by_name = {w.name: w for w in ws}
     assert by_name["Ticket Triage Agent"].kind == "ai-agent"
     assert by_name["Ticket Triage Agent"].attributes["skills"] == "classify-ticket,route-ticket"
@@ -32,21 +32,21 @@ def test_ai_agents_finds_demo_fixtures():
     assert warns == []
 
 
-def test_ai_agents_ignores_non_card_agent_json(tmp_path):
+def test_ai_agents_ignores_non_card_agent_json(tmp_path, gate):
     (tmp_path / "agent.json").write_text(json.dumps({"some": "other format"}))
-    ws, _ = AIAgents({"manifest_dirs": [str(tmp_path)], "max_depth": 1}).discover()
+    ws, _ = AIAgents({"manifest_dirs": [str(tmp_path)], "max_depth": 1}, gate).discover()
     assert ws == []
 
 
-def test_ai_agents_max_depth(tmp_path):
+def test_ai_agents_max_depth(tmp_path, gate):
     deep = tmp_path / "a" / "b"
     deep.mkdir(parents=True)
     (deep / "agent-card.json").write_text(json.dumps({"name": "x", "url": "https://x"}))
-    assert AIAgents({"manifest_dirs": [str(tmp_path)], "max_depth": 2}).discover()[0] == []
-    assert len(AIAgents({"manifest_dirs": [str(tmp_path)], "max_depth": 3}).discover()[0]) == 1
+    assert AIAgents({"manifest_dirs": [str(tmp_path)], "max_depth": 2}, gate).discover()[0] == []
+    assert len(AIAgents({"manifest_dirs": [str(tmp_path)], "max_depth": 3}, gate).discover()[0]) == 1
 
 
-def test_ai_agents_probe():
+def test_ai_agents_probe(gate):
     calls = []
 
     class Resp(io.BytesIO):
@@ -62,12 +62,12 @@ def test_ai_agents_probe():
             raise OSError("404")
         return Resp(json.dumps({"name": "Remote", "url": "https://r", "skills": []}).encode())
 
-    ws, warns = AIAgents({"a2a_urls": ["https://r/"], "timeout_seconds": 1}, opener=opener).discover()
+    ws, warns = AIAgents({"a2a_urls": ["https://r/"], "timeout_seconds": 1}, gate, opener=opener).discover()
     assert [w.name for w in ws] == ["Remote"] and warns == []
     assert calls == ["https://r/.well-known/agent-card.json", "https://r/.well-known/agent.json"]
 
 
-def test_kubernetes(tmp_path):
+def test_kubernetes(tmp_path, gate):
     tok = tmp_path / "token"
     tok.write_text("t0k\n")
     pods = {"items": [{
@@ -89,21 +89,21 @@ def test_kubernetes(tmp_path):
         return Resp(json.dumps(pods).encode())
 
     k = Kubernetes({"api_server": "https://k:6443", "token_file": str(tok), "ca_file": "x", "namespaces": ["agents"],
-                    "timeout_seconds": 1, "label_selector_keys": ["app"]}, opener=opener)
+                    "timeout_seconds": 1, "label_selector_keys": ["app"]}, gate, opener=opener)
     ws, warns = k.discover()
     assert seen == {"url": "https://k:6443/api/v1/namespaces/agents/pods", "auth": "Bearer t0k"}
     assert ws[0].selectors == ["k8s:ns:agents", "k8s:sa:triage-sa", "k8s:pod-label:app:triage"]
     assert ws[0].attributes["label.app"] == "triage"
 
 
-def test_kubernetes_requires_namespaces_and_connection():
+def test_kubernetes_requires_namespaces_and_connection(gate):
     with pytest.raises(ConfigError, match="namespaces"):
-        Kubernetes({"timeout_seconds": 1, "api_server": "x", "token_file": "x", "ca_file": "x"})
+        Kubernetes({"timeout_seconds": 1, "api_server": "x", "token_file": "x", "ca_file": "x"}, gate)
     with pytest.raises(ConfigError, match="api_server"):
-        Kubernetes({"timeout_seconds": 1, "namespaces": ["a"]})
+        Kubernetes({"timeout_seconds": 1, "namespaces": ["a"]}, gate)
 
 
-def test_processes_with_fake_procfs(tmp_path):
+def test_processes_with_fake_procfs(tmp_path, gate):
     def proc(pid, comm, uid, cmd):
         d = tmp_path / str(pid)
         d.mkdir()
@@ -114,27 +114,27 @@ def test_processes_with_fake_procfs(tmp_path):
     proc(11, "python3", 1000, "python3 manage.py runserver")
     proc(12, "bash", 0, "bash")
     (tmp_path / "self").mkdir()
-    ws, warns = Processes({"method": "procfs", "proc_root": str(tmp_path), "include": ["python*"], "cmdline_contains": ["google.adk"]}).discover()
+    ws, warns = Processes({"method": "procfs", "proc_root": str(tmp_path), "include": ["python*"], "cmdline_contains": ["google.adk"]}, gate).discover()
     assert [w.name for w in ws] == ["python3[10]"]
     assert "unix:uid:1000" in ws[0].selectors
     assert any("executable path" in w for w in warns)  # fake procfs has no exe link
 
 
-def test_processes_requires_method_include_and_proc_root():
+def test_processes_requires_method_include_and_proc_root(gate):
     with pytest.raises(ConfigError, match="method"):
-        Processes({"proc_root": "/proc", "include": ["x"]})
+        Processes({"proc_root": "/proc", "include": ["x"]}, gate)
     with pytest.raises(ConfigError, match="include"):
-        Processes({"method": "ps"})
+        Processes({"method": "ps"}, gate)
     with pytest.raises(ConfigError, match="proc_root"):
-        Processes({"method": "procfs", "include": ["x"]})
+        Processes({"method": "procfs", "include": ["x"]}, gate)
 
 
-def test_processes_procfs_missing_root_mentions_ps(tmp_path):
+def test_processes_procfs_missing_root_mentions_ps(tmp_path, gate):
     with pytest.raises(OSError, match='"ps"'):
-        Processes({"method": "procfs", "proc_root": str(tmp_path / "nope"), "include": ["x"]}).discover()
+        Processes({"method": "procfs", "proc_root": str(tmp_path / "nope"), "include": ["x"]}, gate).discover()
 
 
-def test_processes_ps_macos_output():
+def test_processes_ps_macos_output(gate):
     # Shaped like macOS ps: comm is the full executable path and may contain spaces.
     outputs = {
         "pid=,uid=,comm=": (
@@ -150,7 +150,7 @@ def test_processes_ps_macos_output():
             "  104 python3 -m google.adk.cli web\n"
         ),
     }
-    p = Processes({"method": "ps", "include": ["python*", "Google Chrome"], "cmdline_contains": ["google.adk"]},
+    p = Processes({"method": "ps", "include": ["python*", "Google Chrome"], "cmdline_contains": ["google.adk"]}, gate,
                   run_ps=lambda f: outputs[f])
     ws, warns = p.discover()
     by_pid = {w.attributes["pid"]: w for w in ws}
@@ -161,47 +161,47 @@ def test_processes_ps_macos_output():
     assert any("absolute executable path" in w for w in warns)
 
 
-def test_processes_ps_on_this_machine():
+def test_processes_ps_on_this_machine(gate):
     import shutil
     if not shutil.which("ps"):
         pytest.skip("no ps binary")
-    ws, _ = Processes({"method": "ps", "include": ["python*", "Python*"]}).discover()  # macOS framework builds run as "Python"
+    ws, _ = Processes({"method": "ps", "include": ["python*", "Python*"]}, gate).discover()  # macOS framework builds run as "Python"
     assert any(w.attributes["pid"] == str(__import__("os").getpid()) for w in ws)
 
 
-def test_build_resolves_docker_socket_home():
-    d = discovery.build({"docker": {"socket": "~/.docker/run/docker.sock", "timeout_seconds": 1}},
+def test_build_resolves_docker_socket_home(gate):
+    d = discovery.build({"docker": {"socket": "~/.docker/run/docker.sock", "timeout_seconds": 1}}, gate,
                         resolve=lambda p: str(Path(p).expanduser()))[0]
     assert d.socket == str(Path.home() / ".docker/run/docker.sock")
 
 
-def test_docker():
+def test_docker(gate):
     data = [{"Id": "abc", "Names": ["/triage"], "Image": "triage:1", "ImageID": "sha256:1", "State": "running",
              "Labels": {"com.docker.compose.service": "triage"}}]
-    d = Docker({"socket": "/x.sock", "timeout_seconds": 1, "label_selector_keys": ["com.docker.compose.service"]}, fetch=lambda: data)
+    d = Docker({"socket": "/x.sock", "timeout_seconds": 1, "label_selector_keys": ["com.docker.compose.service"]}, gate, fetch=lambda: data)
     ws, _ = d.discover()
     assert ws[0].name == "triage"
     assert ws[0].selectors == ["docker:image_id:sha256:1", "docker:label:com.docker.compose.service:triage"]
 
 
-def test_network_limits_and_scan():
+def test_network_limits_and_scan(gate):
     with pytest.raises(ConfigError):
-        Network({"cidrs": ["10.0.0.0/24"], "ports": [80], "timeout_ms": 10, "max_hosts": 10, "concurrency": 1})
+        Network({"cidrs": ["10.0.0.0/24"], "ports": [80], "timeout_ms": 10, "max_hosts": 10, "concurrency": 1}, gate)
     with pytest.raises(ConfigError):
-        Network({"cidrs": ["10.0.0.0/30"], "ports": [], "timeout_ms": 10, "max_hosts": 10, "concurrency": 1})
+        Network({"cidrs": ["10.0.0.0/30"], "ports": [], "timeout_ms": 10, "max_hosts": 10, "concurrency": 1}, gate)
     assert expand(["10.0.0.0/30"], 4) == ["10.0.0.1", "10.0.0.2"]
-    n = Network({"cidrs": ["10.0.0.0/30"], "ports": [80, 443], "timeout_ms": 10, "max_hosts": 4, "concurrency": 2},
+    n = Network({"cidrs": ["10.0.0.0/30"], "ports": [80, 443], "timeout_ms": 10, "max_hosts": 4, "concurrency": 2}, gate,
                 connect=lambda h, p: (h, p) == ("10.0.0.2", 443))
     ws, _ = n.discover()
     assert [w.selectors for w in ws] == [["net:addr:10.0.0.2:443"]]
 
 
-def test_build_rejects_unknown_source():
+def test_build_rejects_unknown_source(gate):
     with pytest.raises(ConfigError, match="unknown"):
-        discovery.build({"kubernets": {}})
+        discovery.build({"kubernets": {}}, gate)
 
 
-def test_run_isolates_failures():
+def test_run_isolates_failures(gate):
     class Boom:
         name = "boom"
 
@@ -218,8 +218,8 @@ def test_run_isolates_failures():
     assert r[0].error.startswith("RuntimeError") and r[1].warnings == ["w"]
 
 
-def test_build_resolves_paths_relative_to_config():
-    ds = discovery.build({"ai_agents": {"manifest_dirs": ["manifests"], "max_depth": 3}},
+def test_build_resolves_paths_relative_to_config(gate):
+    ds = discovery.build({"ai_agents": {"manifest_dirs": ["manifests"], "max_depth": 3}}, gate,
                          resolve=lambda p: str(EXAMPLES.parent / p))
     ws, warns = discovery.run(ds)[0].workloads, discovery.run(ds)[0].warnings
     assert len(ws) == 4 and warns == []

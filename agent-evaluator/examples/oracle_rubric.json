@@ -1,0 +1,66 @@
+{
+  "name": "self-test",
+  "version": "1",
+  "criteria": [
+    {
+      "id": "has_required_fields",
+      "type": "check",
+      "description": "company, role and link are present and non-empty",
+      "severity": "major",
+      "check": {
+        "type": "required_fields",
+        "params": {"fields": ["output.company", "output.role", "output.link"]}
+      }
+    },
+    {
+      "id": "tier_valid",
+      "type": "check",
+      "description": "tier is one of strong, good, watch",
+      "severity": "minor",
+      "check": {
+        "type": "enum",
+        "params": {"field": "output.tier", "values": ["strong", "good", "watch"]}
+      }
+    },
+    {
+      "id": "not_duplicate",
+      "type": "check",
+      "description": "no two cases share the same company + role",
+      "severity": "minor",
+      "check": {
+        "type": "duplicate",
+        "params": {"fields": ["output.company", "output.role"]}
+      }
+    },
+    {
+      "id": "role_format",
+      "type": "check",
+      "description": "role is a non-empty run of letters and spaces",
+      "severity": "major",
+      "check": {
+        "type": "regex",
+        "params": {"field": "output.role", "pattern": "^[A-Za-z ]+$"}
+      }
+    },
+    {
+      "id": "score_in_range",
+      "type": "check",
+      "description": "score is a valid 0-100 value",
+      "severity": "critical",
+      "check": {
+        "type": "range",
+        "params": {"field": "output.score", "min": 0, "max": 100}
+      }
+    },
+    {
+      "id": "answer_matches_reference",
+      "type": "check",
+      "description": "answer matches the case's reference answer",
+      "severity": "major",
+      "check": {
+        "type": "reference_match",
+        "params": {"field": "output.answer", "normalize": true}
+      }
+    }
+  ]
+}

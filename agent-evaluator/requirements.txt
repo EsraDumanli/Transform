@@ -1,0 +1,3 @@
+jsonschema>=4
+# Optional: only needed once the LLM judge (M3) is enabled
+anthropic>=2.8

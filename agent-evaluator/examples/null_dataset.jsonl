@@ -1,0 +1,3 @@
+{"id": "null-1", "subject": "fixture", "input": {}, "output": {"company": "", "role": "", "link": "", "tier": "", "score": -1, "answer": ""}, "reference": "yes"}
+{"id": "null-2", "subject": "fixture", "input": {}, "output": {"company": "", "role": "", "link": "", "tier": "", "score": -1, "answer": ""}, "reference": "yes"}
+{"id": "null-3", "subject": "fixture", "input": {}, "output": {"company": "", "role": "", "link": "", "tier": "", "score": -1, "answer": ""}, "reference": "yes"}

@@ -191,3 +191,7 @@ dl.assign dd { margin: 0; word-break: break-word; }
 @media (max-width: 760px) { .grant-form { grid-template-columns: 1fr; } .grant-form .wide { grid-column: auto; } }
 .grant-form[hidden] { display: none; }
 .lines { white-space: pre-line; }
+.form-status { grid-column: 1 / -1; margin: 0; padding: 8px 12px; border-radius: 8px; border: 1px solid; font-size: 13px; }
+.form-status.error { background: var(--bad-bg); border-color: var(--bad); color: var(--bad); }
+.form-status.info { background: var(--ok-bg); border-color: var(--ok); color: var(--ok); }
+.form-status.warn { background: var(--warn-bg); border-color: var(--warn); color: var(--warn); }

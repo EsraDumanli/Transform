@@ -25,6 +25,7 @@ function banner(msg, kind = "error") {
   b.textContent = msg;
 }
 
+// Every element the page needs must exist; fail loudly in the console if not.
 async function api(path, body) {
   const opts = body === undefined
     ? { method: "GET" }
@@ -356,6 +357,12 @@ function renderGrants() {
     const ids = [...new Set((state.entries || []).map((e) => e.spiffe_id))].sort();
     sel.replaceChildren(...ids.map((id) => { const o = el("option", { text: id }); o.value = id; return o; }));
     if (ids.includes(current)) sel.value = current;
+    $("g-create").disabled = ids.length === 0;
+    if (ids.length === 0) {
+      formStatus("No registered agent identities yet. Approve an agent in “Discovered workloads” above (Scan now → Approve), then come back here.", "warn");
+    } else if ($("g-status").dataset.kind === "warn") {
+      formStatus(null);
+    }
   }
   if (!state.grants) { empty.hidden = false; empty.textContent = state.lifecycle_error || "Delegation isn't enabled in the tool policy."; return; }
   empty.hidden = state.grants.length > 0;
@@ -380,16 +387,43 @@ function renderGrants() {
   }
 }
 
+// Messages for the grant form appear right under it, not in the banner at the top of the page.
+function formStatus(msg, kind = "error") {
+  const st = $("g-status");
+  if (!msg) { st.hidden = true; st.textContent = ""; delete st.dataset.kind; return; }
+  st.hidden = false; st.className = `form-status ${kind}`; st.textContent = msg; st.dataset.kind = kind;
+  st.scrollIntoView({ block: "nearest", behavior: "smooth" });
+}
+
+const SCOPE_RES = [/^tool:[A-Za-z0-9_.-]+\.[A-Za-z0-9_.-]+$/, /^data:path:\S{1,512}$/, /^data:host:[A-Za-z0-9.-]{1,253}$/];
+
 $("grant-form").addEventListener("submit", async (ev) => {
   ev.preventDefault();
   const scopes = $("g-scopes").value.split("\n").map((x) => x.trim()).filter(Boolean);
-  const body = { principal: $("g-principal").value.trim(), agent_spiffe_id: $("g-agent").value, scopes,
-    minutes: parseInt($("g-minutes").value, 10), note: $("g-note").value.trim() };
-  if (!confirm(`Create a delegation grant?\n\n${body.principal} (typed name, not verified) delegates to ${body.agent_spiffe_id}:\n${scopes.join("\n")}\n\nfor ${body.minutes} minute(s). Scopes are recorded, not yet enforced.`)) return;
-  if (await run($("g-create"), "Creating…", () => api("/api/grant", body))) {
-    $("g-create").disabled = false; $("g-create").textContent = "Create grant";
+  const minutes = parseInt($("g-minutes").value, 10);
+  const lim = state.grant_limits || { max_grant_minutes: 0 };
+  const body = { principal: $("g-principal").value.trim(), agent_spiffe_id: $("g-agent").value, scopes, minutes, note: $("g-note").value.trim() };
+  // Check before sending, and say exactly what's wrong.
+  if (!body.agent_spiffe_id) return formStatus("Pick an agent identity. If the list is empty, approve an agent in “Discovered workloads” first.");
+  if (!body.principal) return formStatus("Type the person's name.");
+  const bad = scopes.filter((x) => !SCOPE_RES.some((re) => re.test(x)));
+  if (!scopes.length) return formStatus("Add at least one scope, one per line, e.g. tool:tickets.read");
+  if (bad.length) return formStatus(`Not a valid scope: ${bad.join(", ")}. Use tool:<server>.<tool> (with a dot), data:path:<path or glob>, or data:host:<hostname>.`);
+  if (!Number.isInteger(minutes) || minutes < 1) return formStatus("Minutes must be a whole number, at least 1.");
+  if (minutes > lim.max_grant_minutes) return formStatus(`Minutes can be at most ${lim.max_grant_minutes} (tool policy).`);
+  if (!confirm(`Create a delegation grant?\n\n${body.principal} (typed name, not verified) delegates to ${body.agent_spiffe_id}:\n${scopes.join("\n")}\n\nfor ${minutes} minute(s). Scopes are recorded, not yet enforced.`)) return;
+  const btn = $("g-create");
+  btn.disabled = true; btn.textContent = "Creating…";
+  try {
+    state = await api("/api/grant", body);
     $("grant-form").reset();
-    banner(`Grant created: ${body.principal} → ${body.agent_spiffe_id}`, "info");
+    render();
+    formStatus(`Grant created: ${body.principal} → ${body.agent_spiffe_id} for ${minutes} min.`, "info");
+  } catch (err) {
+    formStatus(`Couldn't create the grant: ${err.message}`);
+  } finally {
+    btn.textContent = "Create grant";
+    btn.disabled = !$("g-agent").value;
   }
 });
 

@@ -99,15 +99,16 @@
 
     <section aria-labelledby="gr-h">
       <h2 id="gr-h">Delegation grants (human → agent)</h2>
-      <form id="grant-form" class="grant-form" autocomplete="off">
+      <form id="grant-form" class="grant-form" autocomplete="off" novalidate>
         <label>Person <input id="g-principal" maxlength="100" placeholder="e.g. Esra" required></label>
         <label>Agent identity <select id="g-agent" required></select></label>
         <label class="wide">Scopes, one per line
-          <textarea id="g-scopes" rows="3" placeholder="tool:filesystem.read_file&#10;data:path:~/Projects/transform/**" required></textarea></label>
-        <label>Minutes <input id="g-minutes" type="number" min="1" step="1" required></label>
+          <textarea id="g-scopes" rows="3" placeholder="e.g.  tool:tickets.read&#10;e.g.  data:path:~/Projects/transform/**" required></textarea></label>
+        <label>Minutes <input id="g-minutes" type="number" min="1" step="1" placeholder="e.g. 30" required></label>
         <label class="wide">Note (optional) <input id="g-note" maxlength="200"></label>
         <div class="form-actions"><button id="g-create" class="btn primary" type="submit">Create grant</button>
           <span id="g-limits" class="muted"></span></div>
+        <p id="g-status" class="form-status" role="status" aria-live="polite" hidden></p>
       </form>
       <div class="table-wrap">
         <table class="grid">

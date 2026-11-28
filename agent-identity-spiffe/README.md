@@ -61,7 +61,7 @@ examples/
   manifests/           DEMO FIXTURES: one A2A agent card, one MCP config (made up)
 scripts/               setup.sh (venv + install), demo.sh (full flow in the terminal), portal.sh (server + portal),
                        dev_fake_node_agent.py (TEST ONLY: software-key stand-in for the Mac node agent)
-tests/                 132 tests, no network access needed
+tests/                 134 tests, no network access needed
 ```
 
 ## Quickstart (demo, localhost only)
@@ -131,8 +131,16 @@ Then click **Scan now**. `examples/laptop.config.json` looks in:
 |---|---|
 | `~/Library/Application Support/Claude/claude_desktop_config.json` | Claude Desktop's MCP servers |
 | `~/.claude.json` | Claude Code's MCP servers, both user-wide and per-project (shown with the project path) |
+| `../../job-search-agent/agent-card.json` | the Job Search Agent's card (name, skills); if `python app.py` is running **from that folder**, the process is merged into it, so it shows as one **ai-agent** marked running |
 | `examples/manifests/` | the made-up demo agents, shown with a **DEMO** tag so they can't be confused with real ones |
 | Running processes (`ps`) | Python / Node / `npx` / `uvx` processes whose command line contains `app.py`, `mcp` or `modelcontextprotocol`, e.g. the Job Search Agent started with `python app.py`, or running MCP servers |
+
+**Agents, MCP servers and processes:** the *kind* column says how something was found.
+- **ai-agent:** it has an agent card.
+- **mcp-server:** an app's MCP config lists it.
+- **process:** only the OS process list shows it.
+
+When a running process's working folder contains an agent card, the two are **merged** into one ai-agent (attribute `running: yes`, plus the process's pid, executable and folder). An interpreter's path (Python, Node…) identifies the interpreter, not your app, so it never raises confidence above Low.
 
 **Notes:**
 - **Only those places are read.** The tool policy (`examples/laptop.tool-policy.json`) allows reading only those two paths. Everything else (other folders, Docker, Kubernetes, network scans, the LLM) is blocked, and every read is in the trace.

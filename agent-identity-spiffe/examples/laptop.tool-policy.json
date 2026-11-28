@@ -10,7 +10,8 @@
       "paths": [
         "~/Library/Application Support/Claude",
         "~/.claude.json",
-        "manifests"
+        "manifests",
+        "../../job-search-agent"
       ]
     },
     "server.connect": {

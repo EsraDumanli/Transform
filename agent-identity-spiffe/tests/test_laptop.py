@@ -48,7 +48,8 @@ def test_laptop_config_finds_local_agents_and_reads_nothing_else(tmp_path, monke
     scan = pipeline.plan(cfg, gate, use_llm=False)
     found = {p.workload.name: p for p in scan.proposals}
     demo = {"Ticket Triage Agent", "ticket-api", "notes-search"}         # demo fixtures, labelled
-    assert set(found) == {"github", "tickets"} | demo | {"filesystem"}
+    assert set(found) == {"github", "tickets", "Job Search Agent"} | demo | {"filesystem"}
+    assert found["Job Search Agent"].spiffe_id == "spiffe://demo.local/ai-agent/Job-Search-Agent"
     assert all(found[n].workload.attributes.get("label") == "demo" for n in demo)
     assert "label" not in found["github"].workload.attributes and "label" not in found["tickets"].workload.attributes
     assert found["github"].spiffe_id == "spiffe://demo.local/mcp/http/github"
@@ -81,3 +82,39 @@ def test_per_folder_depth_and_label(tmp_path, monkeypatch):
         AIAgents({"manifest_dirs": [{"path": str(tmp_path)}]}, gate)
     with pytest.raises(ConfigError, match="unknown key"):
         AIAgents({"manifest_dirs": [{"path": str(tmp_path), "max_depth": 1, "depth": 2}]}, gate)
+
+
+def test_job_search_agent_card_and_process_merge_into_one_agent(tmp_path):
+    from spiffe_identity import discovery
+    from spiffe_identity.discovery.base import Result, Workload
+    from spiffe_identity.nodes import attestation_method
+    card_dir = (EXAMPLES / "../../job-search-agent").resolve()
+    from spiffe_identity.discovery.ai_agents import parse_a2a_file
+    card = parse_a2a_file(card_dir / "agent-card.json")
+    assert card.name == "Job Search Agent" and "url" not in card.attributes       # no fake A2A endpoint
+    proc = Workload(source="processes", kind="process", name="Python[3722]",
+                    attributes={"pid": "3722", "uid": "501", "comm": "Python", "cmdline": "Python app.py",
+                                "exe": "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python",
+                                "cwd": str(card_dir)},
+                    selectors=["unix:uid:501", "unix:comm:Python", f"unix:cwd:{card_dir}",
+                               "unix:path:/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python"])
+    other = Workload(source="processes", kind="process", name="Python[9]", attributes={"cwd": "/elsewhere"}, selectors=["unix:comm:Python"])
+    results = [Result("ai-agents", [card]), Result("processes", [proc, other])]
+    notes = pipeline.correlate(results)
+    assert [w.name for w in results[1].workloads] == ["Python[9]"]                 # merged process removed
+    merged = results[0].workloads[0]
+    assert merged.kind == "ai-agent" and merged.attributes["running"] == "yes" and merged.attributes["pid"] == "3722"
+    assert f"unix:cwd:{card_dir}" in merged.selectors and notes
+    assert merged.source == "ai-agents" and merged.attributes["also_seen_by"] == "processes"
+    assert attestation_method(merged.selectors) == "process-name"                  # interpreter path doesn't count
+
+
+def test_cwd_is_recorded_on_macos_ps(tmp_path):
+    from spiffe_identity.discovery import Processes
+    from tests.helpers import make_gate
+    out = {"pid=,uid=,comm=": "  3722   501 /opt/homebrew/bin/python3.12\n", "pid=,args=": "  3722 python3.12 app.py\n"}
+    gate = make_gate(tmp_path, {"discovery.processes.read": {"methods": ["ps"]}})
+    ws, _ = Processes({"method": "ps", "include": ["python*"], "cmdline_contains": ["app.py"]}, gate,
+                      run_ps=lambda f: out[f], run_cwd=lambda pid: "/Users/x/Transform/job-search-agent").discover()
+    assert ws[0].attributes["cwd"] == "/Users/x/Transform/job-search-agent"
+    assert "unix:cwd:/Users/x/Transform/job-search-agent" in ws[0].selectors

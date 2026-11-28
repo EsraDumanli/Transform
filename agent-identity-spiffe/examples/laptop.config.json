@@ -1,5 +1,5 @@
 {
-  "_comment": "Scans THIS computer for real agents: Claude Desktop's MCP config, Claude Code's ~/.claude.json (user and per-project MCP servers), and running processes that look like agents or MCP servers (including the Job Search Agent started with `python app.py`). It also includes the made-up demo agents from examples/manifests, labelled 'demo' so they show a DEMO tag in the portal. Uses its own data folder (.data/laptop). The trust domain 'demo.local' is kept so the policy prefixes match; change both together if you want another name.",
+  "_comment": "Scans THIS computer for real agents: Claude Desktop's MCP config, Claude Code's ~/.claude.json (user and per-project MCP servers), and running processes that look like agents or MCP servers (including the Job Search Agent started with `python app.py`). It also includes the made-up demo agents from examples/manifests, labelled 'demo' so they show a DEMO tag in the portal. Uses its own data folder (.data/laptop). The trust domain 'demo.local' is kept so the policy prefixes match; change both together if you want another name. The Job Search Agent's folder (../../job-search-agent) is read for its agent card; a running `python app.py` from that folder is merged into it.",
   "tool_policy_file": "laptop.tool-policy.json",
   "trust_domain": "demo.local",
   "server": {
@@ -39,6 +39,10 @@
           "path": "manifests",
           "max_depth": 3,
           "label": "demo"
+        },
+        {
+          "path": "../../job-search-agent",
+          "max_depth": 1
         }
       ],
       "manifest_files": [
@@ -87,7 +91,8 @@
         "match": {
           "kind": "process",
           "attributes": {
-            "cmdline": "*app.py*"
+            "cmdline": "*app.py*",
+            "cwd": "*/job-search-agent"
           }
         },
         "spiffe_id_path": "/agent/job-search-agent"

@@ -175,6 +175,10 @@ def attestation_method(selectors: list[str]) -> str:
         if has("macos:cdhash:") and "macos:hardened_runtime:true" in s:
             return "macos-se-node+codesign"
         return "macos-se-node"
+    # An interpreter's path (python, node, ...) identifies the interpreter, not the app it runs.
+    paths = [x.split(":", 2)[2] for x in s if x.startswith("unix:path:")]
+    if paths and all(_is_interpreter(pth) for pth in paths):
+        s = {x for x in s if not x.startswith("unix:path:")}
     for prefix, method in (("k8s:sa:", "k8s-api"), ("docker:image_id:", "docker-image"),
                            ("unix:path:", "process-path"), ("unix:comm:", "process-name"),
                            ("ai:a2a-card:", "a2a-card"), ("ai:mcp-config:", "mcp-config"),
@@ -182,6 +186,13 @@ def attestation_method(selectors: list[str]) -> str:
         if has(prefix):
             return method
     return "unknown"
+
+
+_INTERPRETERS = re.compile(r"^(python[0-9.]*|Python|node|nodejs|deno|bun|ruby|perl[0-9.]*|php[0-9.]*|java|bash|zsh|sh|osascript)$")
+
+
+def _is_interpreter(path: str) -> bool:
+    return bool(_INTERPRETERS.match(os.path.basename(path)))
 
 
 def confidence(method: str, rubric: dict[str, str]) -> str:

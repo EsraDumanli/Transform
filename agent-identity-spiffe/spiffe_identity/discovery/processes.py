@@ -23,6 +23,15 @@ from .base import KIND_PROCESS, ConfigError, Workload
 METHODS = ("procfs", "ps")
 
 
+def _run_lsof_cwd(pid: str) -> str:
+    """macOS / Linux: the process's working directory via lsof ('' if unavailable)."""
+    try:
+        out = subprocess.run(["lsof", "-a", "-p", pid, "-d", "cwd", "-Fn"], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return next((line[1:] for line in out.splitlines() if line.startswith("n/")), "")
+
+
 def _run_ps(fields: str) -> str:
     return subprocess.run(
         ["ps", "-axww", "-o", fields], capture_output=True, text=True, check=True, timeout=30
@@ -32,13 +41,14 @@ def _run_ps(fields: str) -> str:
 class Processes:
     name = "processes"
 
-    def __init__(self, cfg: dict, gate, run_ps=_run_ps):
+    def __init__(self, cfg: dict, gate, run_ps=_run_ps, run_cwd=_run_lsof_cwd):
         self.gate = gate
         self.method = cfg.get("method") or ""
         self.include = cfg.get("include") or []
         self.cmdline_contains = cfg.get("cmdline_contains") or []
         self.proc_root = cfg.get("proc_root") or ""
         self._run_ps = run_ps
+        self._run_cwd = run_cwd
         if self.method not in METHODS:
             raise ConfigError('processes: method is required: "procfs" (Linux) or "ps" (macOS, also works on Linux)')
         if not self.include:
@@ -62,12 +72,15 @@ class Processes:
         return not self.cmdline_contains or any(s in cmdline for s in self.cmdline_contains)
 
     @staticmethod
-    def _workload(pid: str, uid: str, comm: str, exe: str, cmdline: str) -> Workload:
+    def _workload(pid: str, uid: str, comm: str, exe: str, cmdline: str, cwd: str = "") -> Workload:
         attrs = {"pid": pid, "uid": uid, "comm": comm, "cmdline": cmdline}
         sel = [f"unix:uid:{uid}", f"unix:comm:{comm}"]
         if exe:
             attrs["exe"] = exe
             sel.append(f"unix:path:{exe}")
+        if cwd:
+            attrs["cwd"] = cwd             # which folder it runs from (lets rules tell apps apart)
+            sel.append(f"unix:cwd:{cwd}")
         return Workload(source="processes", kind=KIND_PROCESS, name=f"{comm}[{pid}]", attributes=attrs, selectors=sel)
 
     # ---- procfs (Linux) -------------------------------------------------------
@@ -103,7 +116,11 @@ class Processes:
                 continue
             if not exe:
                 unreadable_exe += 1
-            out.append(self._workload(entry.name, uid, comm, exe, cmdline))
+            try:
+                cwd = os.readlink(entry / "cwd")
+            except OSError:
+                cwd = ""
+            out.append(self._workload(entry.name, uid, comm, exe, cmdline, cwd))
         if unreadable_exe:
             warns.append(
                 f"processes: could not read the executable path of {unreadable_exe} matching process(es) "
@@ -140,7 +157,7 @@ class Processes:
                 continue
             if not exe:
                 relative += 1
-            out.append(self._workload(pid, uid, comm, exe, cmdline))
+            out.append(self._workload(pid, uid, comm, exe, cmdline, self._run_cwd(pid)))
         if relative:
             warns.append(
                 f"processes: ps gave no absolute executable path for {relative} matching process(es); "

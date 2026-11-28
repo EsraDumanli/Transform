@@ -36,8 +36,41 @@ def discover(cfg: dict, gate) -> list[discovery.Result]:
     return discovery.run(discovery.build(dcfg, gate, lambda p: config_mod.resolve_path(cfg, p)))
 
 
+def correlate(results: list[discovery.Result]) -> list[str]:
+    """Merge a running process into the agent card found in the folder it runs from.
+
+    A card says *what* the agent is (name, skills); the process shows it's
+    actually running (pid, executable, user). Merged, they're one ai-agent
+    workload carrying both sets of evidence instead of two separate rows.
+    Returns notes describing each merge.
+    """
+    cards = {}
+    for r in results:
+        for w in r.workloads:
+            origin = w.attributes.get("origin", "")
+            if w.kind == "ai-agent" and w.attributes.get("protocol") == "a2a" and origin.startswith("/"):
+                cards.setdefault(os.path.dirname(origin), w)
+    notes = []
+    for r in results:
+        keep = []
+        for w in r.workloads:
+            card = cards.get(w.attributes.get("cwd", "")) if w.kind == "process" else None
+            if card is None or card.attributes.get("running") == "yes":
+                keep.append(w)
+                continue
+            card.attributes.update({"running": "yes", "pid": w.attributes.get("pid", ""),
+                                    "process_exe": w.attributes.get("exe", ""), "process_cwd": w.attributes["cwd"],
+                                    "process_uid": w.attributes.get("uid", "")})
+            card.selectors = sorted(set(card.selectors) | set(w.selectors))
+            card.attributes["also_seen_by"] = "processes"   # source stays "ai-agents" so policy rules keep matching
+            notes.append(f"merged process {w.name} into agent card '{card.name}' (runs from {w.attributes['cwd']})")
+        r.workloads = keep
+    return notes
+
+
 def plan(cfg: dict, gate, use_llm: bool | None = None) -> Scan:
     results = discover(cfg, gate)
+    merge_notes = correlate(results)
     policy = Policy.from_config(cfg["trust_domain"], config_mod.section(cfg, "policy"))
     seen, proposals = set(), []
     for r in results:
@@ -46,7 +79,7 @@ def plan(cfg: dict, gate, use_llm: bool | None = None) -> Scan:
                 continue
             seen.add(w.key())
             proposals.append(policy.assign(w))
-    notes: list[str] = []
+    notes: list[str] = list(merge_notes)
     llm_cfg = cfg.get("llm") or {}
     enabled = llm_cfg.get("enabled", False) if use_llm is None else use_llm
     unassigned = [p for p in proposals if not p.assignable]

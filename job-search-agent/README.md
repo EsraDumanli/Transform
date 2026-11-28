@@ -12,6 +12,10 @@ that fit, and scores each one as a **strong**, **good**, or **watch** match.
 New postings are saved to a local database so re-runs only surface what's
 actually new.
 
+## Agent card
+
+`agent-card.json` describes this app (name, skills) so discovery tools, like the SPIFFE project in this repo, can recognise it as an agent. It's only a description: the app doesn't implement the A2A agent-to-agent protocol, so the card has no A2A endpoint URL.
+
 ## Features
 
 - Accounts with email/password login -- each person only ever sees their own

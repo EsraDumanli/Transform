@@ -1,0 +1,22 @@
+{
+  "name": "Job Search Agent",
+  "description": "Self-hosted tool that searches the web for job postings matching a resume (via Claude's web search) and scores them strong / good / watch on a local web dashboard (python app.py, http://localhost:<PORT>, default 5000). Runs on demand or on a schedule. This card only describes the app for discovery: the app does not implement the A2A protocol, so no A2A endpoint URL is given. Every fact here comes from this project's README.",
+  "skills": [
+    {
+      "id": "parse-resume",
+      "name": "Read a resume (PDF, DOCX or text)"
+    },
+    {
+      "id": "search-postings",
+      "name": "Search target companies' career pages and the web for matching roles"
+    },
+    {
+      "id": "score-matches",
+      "name": "Score each posting as a strong, good or watch match"
+    },
+    {
+      "id": "schedule-searches",
+      "name": "Run searches on demand or on a schedule"
+    }
+  ]
+}

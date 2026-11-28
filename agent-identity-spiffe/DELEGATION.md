@@ -1,8 +1,8 @@
-# Delegation (Human → Agent): Design Draft (v0.1, for review)
+# Delegation (Human → Agent): Design (v0.2; implemented)
 
 **Goal:** every issued identity can say **which person the agent is acting for**, **what it may do for them**, and **until when**, and the dashboard shows it. This addresses the "on whose behalf?" gap from the OWASP agentic review (ASI03, Identity & Privilege Abuse).
 
-**Status:** design only, nothing built. Items marked **[OPEN]** need your decision ([section 9](#9-open-questions)).
+**Status:** **implemented** on `SPIFFE-Changes`: grants (create, list, withdraw), delegated X.509 and JWT identities, the issuance log showing delegation, CLI and portal. Scopes are recorded, not yet enforced (MCP gateway).
 
 ## 0. Decisions made
 
@@ -12,6 +12,10 @@
 | G2 | Where it's recorded | **On each issued identity:** each 30–60 minute identity carries the delegation it was issued under, so it can differ per session. |
 | G3 | What's recorded | **Who + scope + expiry:** the person, the scopes they delegated (e.g. tools or data), and an end time. Shown now; enforced later by the MCP gateway. |
 | G4 | How a person is identified | **A typed name**, like today's `--approver`. **Not verified** (see section 5). |
+| G5 | Q1: must agent identities be delegated? | **No:** agents can also get service identities. |
+| G6 | Q2: scope types and limits | **`tool:`, `data:path:`, `data:host:`**; longest grant **60 minutes** (`max_grant_minutes: 60`). |
+| G7 | Q4: claim format | **Custom `del` claim**; `sub` stays the agent. |
+| G8 | Q5: build order | **Issuance log first**, then revocation and delegation. |
 
 ## 1. The core rule: an agent can't claim a person by itself
 

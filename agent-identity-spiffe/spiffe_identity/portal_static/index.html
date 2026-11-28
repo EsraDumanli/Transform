@@ -85,6 +85,40 @@
       <p id="bld-empty" class="empty" hidden></p>
     </section>
 
+    <section aria-labelledby="id-h">
+      <h2 id="id-h">Active identities</h2>
+      <div class="table-wrap">
+        <table class="grid">
+          <thead><tr><th>Identity</th><th>Acts for</th><th>Confidence</th><th class="hide-sm">Expires</th><th>Status</th><th class="act">Revoke</th></tr></thead>
+          <tbody id="sv-body"></tbody>
+        </table>
+      </div>
+      <p id="sv-empty" class="empty" hidden></p>
+      <p class="fine">Revoking adds the identity to the CA-signed revocation list. Verifiers refresh the list every minute and refuse all identities if their copy is older than its validity period (fail closed).</p>
+    </section>
+
+    <section aria-labelledby="gr-h">
+      <h2 id="gr-h">Delegation grants (human → agent)</h2>
+      <form id="grant-form" class="grant-form" autocomplete="off">
+        <label>Person <input id="g-principal" maxlength="100" placeholder="e.g. Esra" required></label>
+        <label>Agent identity <select id="g-agent" required></select></label>
+        <label class="wide">Scopes, one per line
+          <textarea id="g-scopes" rows="3" placeholder="tool:filesystem.read_file&#10;data:path:~/Projects/transform/**" required></textarea></label>
+        <label>Minutes <input id="g-minutes" type="number" min="1" step="1" required></label>
+        <label class="wide">Note (optional) <input id="g-note" maxlength="200"></label>
+        <div class="form-actions"><button id="g-create" class="btn primary" type="submit">Create grant</button>
+          <span id="g-limits" class="muted"></span></div>
+      </form>
+      <div class="table-wrap">
+        <table class="grid">
+          <thead><tr><th>Person</th><th>Agent</th><th class="hide-sm">Scopes</th><th>Valid until</th><th>State</th><th class="act">Action</th></tr></thead>
+          <tbody id="gr-body"></tbody>
+        </table>
+      </div>
+      <p id="gr-empty" class="empty" hidden></p>
+      <p class="fine">Names are typed, not verified. Scopes are recorded and shown, but <strong>not yet enforced</strong>: enforcement comes with the MCP gateway. Withdrawing a grant stops new delegated identities; ones already issued end no later than the grant's end time.</p>
+    </section>
+
     <section aria-labelledby="en-h">
       <h2 id="en-h">Registered identities on the SPIFFE server</h2>
       <div class="table-wrap">
@@ -94,7 +128,7 @@
         </table>
       </div>
       <p id="en-empty" class="empty" hidden></p>
-      <p class="fine">Revoking deletes the registration entry, so the server stops issuing new SVIDs for it. SVIDs that were already issued stay valid until they expire: this learning server has no revocation list.</p>
+      <p class="fine">Deleting an entry stops new identities for it. Identities already issued stay valid until they expire unless you revoke them in <em>Active identities</em>.</p>
     </section>
   </main>
 

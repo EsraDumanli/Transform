@@ -20,6 +20,7 @@ import hashlib
 import ipaddress
 import json
 import os
+import secrets
 import time
 from pathlib import Path
 
@@ -35,6 +36,10 @@ from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 from . import spiffeid
 from .spiffeid import SpiffeID
+
+# Non-critical extension carrying delegation (DELEGATION.md). A 2.25.<uuid> OID needs
+# no registration; verifiers that don't know it ignore it, so plain TLS still works.
+DELEGATION_OID = x509.ObjectIdentifier("2.25.208473859235704118417426637591436178951")
 
 CA_KEY_FILE = "ca-key.pem"
 CA_CERT_FILE = "ca-cert.pem"
@@ -176,13 +181,14 @@ class CertificateAuthority:
         now = _now()
         return now, min(now + ttl, self.cert.not_valid_after_utc)  # never outlive the CA
 
-    def _sign_leaf(self, public_key, sid: SpiffeID, ttl: dt.timedelta, dns_names=(), ips=()) -> x509.Certificate:
+    def _sign_leaf(self, public_key, sid: SpiffeID, ttl: dt.timedelta, dns_names=(), ips=(),
+                   delegation: dict | None = None) -> x509.Certificate:
         self._check_workload_id(sid)
         now, not_after = self._clamp(ttl)
         sans: list[x509.GeneralName] = [x509.UniformResourceIdentifier(str(sid))]
         sans += [x509.DNSName(n) for n in dns_names]
         sans += [x509.IPAddress(ipaddress.ip_address(i)) for i in ips]
-        return (
+        builder = (
             x509.CertificateBuilder()
             .subject_name(x509.Name([x509.NameAttribute(NameOID.ORGANIZATION_NAME, "SPIFFE")]))
             .issuer_name(self.cert.subject)
@@ -204,10 +210,13 @@ class CertificateAuthority:
             .add_extension(
                 x509.AuthorityKeyIdentifier.from_issuer_public_key(self.key.public_key()), critical=False
             )
-            .sign(self.key, hashes.SHA256())
         )
+        if delegation is not None:
+            payload = json.dumps(delegation, sort_keys=True, separators=(",", ":")).encode()
+            builder = builder.add_extension(x509.UnrecognizedExtension(DELEGATION_OID, payload), critical=False)
+        return builder.sign(self.key, hashes.SHA256())
 
-    def issue_x509_svid(self, csr_pem: bytes, sid: SpiffeID, ttl: dt.timedelta) -> bytes:
+    def issue_x509_svid(self, csr_pem: bytes, sid: SpiffeID, ttl: dt.timedelta, delegation: dict | None = None) -> bytes:
         """Sign the public key in a CSR into an X.509-SVID for ``sid``.
 
         The CSR's own subject and SANs are ignored: the CA decides what goes in
@@ -219,7 +228,7 @@ class CertificateAuthority:
             raise CAError(f"invalid CSR: {e}") from e
         if not csr.is_signature_valid:
             raise CAError("CSR signature does not verify")
-        return self._sign_leaf(csr.public_key(), sid, ttl).public_bytes(serialization.Encoding.PEM)
+        return self._sign_leaf(csr.public_key(), sid, ttl, delegation=delegation).public_bytes(serialization.Encoding.PEM)
 
     def issue_server_cert(self, sid: SpiffeID, dns_names, ips, ttl: dt.timedelta) -> tuple[bytes, bytes]:
         """The server's own TLS cert: an X.509-SVID that also carries DNS/IP SANs."""
@@ -230,15 +239,24 @@ class CertificateAuthority:
 
     # ---- JWT-SVIDs ----------------------------------------------------------
 
-    def mint_jwt_svid(self, sid: SpiffeID, audience: list[str], ttl: dt.timedelta) -> str:
+    def mint_jwt_svid(self, sid: SpiffeID, audience: list[str], ttl: dt.timedelta,
+                      delegation: dict | None = None, jti: str | None = None) -> str:
+        """Mint a JWT-SVID. ``jti`` names it for revocation; ``delegation`` goes in a ``del`` claim."""
         self._check_workload_id(sid)
         if not audience:
             raise CAError("a JWT-SVID needs at least one audience")
         now, exp = self._clamp(ttl)
-        header = {"alg": "ES256", "kid": self.key_id, "typ": "JWT"}
-        claims = {"sub": str(sid), "aud": audience, "exp": int(exp.timestamp()), "iat": int(now.timestamp())}
+        claims = {"sub": str(sid), "aud": audience, "exp": int(exp.timestamp()), "iat": int(now.timestamp()),
+                  "jti": jti or secrets.token_hex(16)}
+        if delegation is not None:
+            claims["del"] = delegation
+        return self.sign_jws(claims, "JWT")
+
+    def sign_jws(self, payload: dict, typ: str) -> str:
+        """Compact ES256 JWS signed with the CA's JWT key (also used for the JWT revocation list)."""
+        header = {"alg": "ES256", "kid": self.key_id, "typ": typ}
         signing_input = _b64(json.dumps(header, separators=(",", ":")).encode()) + "." + _b64(
-            json.dumps(claims, separators=(",", ":")).encode()
+            json.dumps(payload, separators=(",", ":")).encode()
         )
         der = self.key.sign(signing_input.encode(), ec.ECDSA(hashes.SHA256()))
         r, s = decode_dss_signature(der)
@@ -281,9 +299,8 @@ def verify_x509_svid(cert_pem: bytes, bundle_pem: bytes, at: dt.datetime | None 
     raise CAError("SVID is not signed by any CA in the bundle")
 
 
-def verify_jwt_svid(token: str, jwks: dict, audience: str, now: float | None = None) -> SpiffeID:
-    """Verify a JWT-SVID against a JWKS and return its SPIFFE ID."""
-    now = time.time() if now is None else now
+def verify_jws(token: str, jwks: dict, typ: str | None = None) -> dict:
+    """Verify a compact ES256 JWS against a JWKS and return its payload (no expiry checks)."""
     try:
         h64, p64, s64 = token.split(".")
         header = json.loads(_unb64(h64))
@@ -293,6 +310,8 @@ def verify_jwt_svid(token: str, jwks: dict, audience: str, now: float | None = N
         raise CAError("malformed JWT") from e
     if header.get("alg") != "ES256":
         raise CAError(f"unexpected alg {header.get('alg')!r}")
+    if typ is not None and header.get("typ") != typ:
+        raise CAError(f"unexpected typ {header.get('typ')!r} (expected {typ!r})")
     key = next((k for k in jwks.get("keys", []) if k.get("kid") == header.get("kid")), None)
     if key is None:
         raise CAError("no key in the bundle matches the token's kid")
@@ -306,6 +325,21 @@ def verify_jwt_svid(token: str, jwks: dict, audience: str, now: float | None = N
         pub.verify(der, f"{h64}.{p64}".encode(), ec.ECDSA(hashes.SHA256()))
     except InvalidSignature as e:
         raise CAError("signature does not verify") from e
+    return claims
+
+
+def jwt_claims_unverified(token: str) -> dict:
+    """Read a JWT's claims WITHOUT verifying it (only for display after verification)."""
+    try:
+        return json.loads(_unb64(token.split(".")[1]))
+    except (IndexError, ValueError, json.JSONDecodeError) as e:
+        raise CAError("malformed JWT") from e
+
+
+def verify_jwt_svid(token: str, jwks: dict, audience: str, now: float | None = None) -> SpiffeID:
+    """Verify a JWT-SVID against a JWKS and return its SPIFFE ID."""
+    now = time.time() if now is None else now
+    claims = verify_jws(token, jwks, typ="JWT")
     if now >= claims.get("exp", 0):
         raise CAError("token expired")
     aud = claims.get("aud")

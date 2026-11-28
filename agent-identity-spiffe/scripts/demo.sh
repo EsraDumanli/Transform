@@ -26,6 +26,6 @@ echo; echo "== 2. apply (you approve each identity) =="
 
 echo; echo "== 3. verify the issued X.509-SVIDs =="
 for d in out/*/; do
-  [ -f "$d/svid.pem" ] && "$PY" -m spiffe_identity.cli verify-x509 --cert "$d/svid.pem" --bundle "$d/bundle.pem"
+  [ -f "$d/svid.pem" ] && "$PY" -m spiffe_identity.cli verify-x509 --cert "$d/svid.pem" --bundle "$d/bundle.pem" --server https://127.0.0.1:8443
 done
 echo; echo "Done. Delete .data/ and out/ to start over."

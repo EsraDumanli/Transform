@@ -97,16 +97,59 @@ class Client:
     def list_entries(self) -> list[dict]:
         return self._call("server.entries.list", "GET", "/v1/entries")
 
-    def x509_svid(self, spiffe_id: str) -> tuple[bytes, bytes, bytes]:
+    def x509_svid(self, spiffe_id: str, delegation: dict | None = None) -> tuple[bytes, bytes, bytes]:
         """Generate a key locally, send only the CSR. Returns (cert_pem, key_pem, bundle_pem)."""
         key = ec.generate_private_key(ec.SECP256R1())
         csr = x509.CertificateSigningRequestBuilder().subject_name(x509.Name([])).sign(key, hashes.SHA256())
         resp = self._call("server.svid.x509", "POST", "/v1/svid/x509", {
             "spiffe_id": spiffe_id, "csr": csr.public_bytes(serialization.Encoding.PEM).decode(),
+            **({"delegation": delegation} if delegation else {}),
         }, spiffe_id=spiffe_id)
         key_pem = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption())
         return resp["svid"].encode(), key_pem, resp["bundle"].encode()
 
-    def jwt_svid(self, spiffe_id: str, audience: list[str]) -> str:
-        return self._call("server.svid.jwt", "POST", "/v1/svid/jwt", {"spiffe_id": spiffe_id, "audience": audience},
-                          spiffe_id=spiffe_id, audience=audience)["token"]
+    def jwt_svid(self, spiffe_id: str, audience: list[str], delegation: dict | None = None) -> str:
+        body = {"spiffe_id": spiffe_id, "audience": audience, **({"delegation": delegation} if delegation else {})}
+        return self._call("server.svid.jwt", "POST", "/v1/svid/jwt", body, spiffe_id=spiffe_id, audience=audience)["token"]
+
+    # ---- identity lifecycle: issued identities, revocation, delegation grants ------
+
+    def list_svids(self) -> list[dict]:
+        return self._call("server.svid.list_issued", "GET", "/v1/svids")
+
+    def revoke_svid(self, kind: str, ident: str, reason: str, revoked_by: str, note: str = "") -> dict:
+        return self._call("server.svid.revoke", "POST", "/v1/svids/revoke",
+                          {"kind": kind, "ident": ident, "reason": reason, "revoked_by": revoked_by, "note": note},
+                          kind=kind, ident=ident, reason=reason, revoked_by=revoked_by)
+
+    def list_grants(self) -> list[dict]:
+        return self._call("server.grants.list", "GET", "/v1/grants")
+
+    def create_grant(self, principal: str, agent_spiffe_id: str, scopes: list[str], minutes: int,
+                     created_by: str, note: str = "") -> dict:
+        from .lifecycle import LifecycleError, scope_type
+        try:
+            types = sorted({scope_type(x) for x in scopes})
+        except LifecycleError as e:
+            raise ServerError(str(e)) from e
+        return self._call("server.grants.create", "POST", "/v1/grants",
+                          {"principal": principal, "agent_spiffe_id": agent_spiffe_id, "scopes": scopes,
+                           "minutes": minutes, "created_by": created_by, "note": note},
+                          principal=principal, agent_spiffe_id=agent_spiffe_id, minutes=minutes, scope_types=types)
+
+    def withdraw_grant(self, grant_id: str, withdrawn_by: str) -> dict:
+        if not grant_id.replace("_", "").isalnum():
+            raise ServerError("invalid grant id")
+        return self._call("server.grants.withdraw", "POST", f"/v1/grants/{grant_id}/withdraw",
+                          {"withdrawn_by": withdrawn_by}, grant=grant_id, withdrawn_by=withdrawn_by)
+
+    def fetch_public(self, path: str) -> bytes:
+        """Unauthenticated GET of a public endpoint (trust bundle, revocation lists)."""
+        req = urllib.request.Request(self.base + path, method="GET")
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout, context=self.ctx) as resp:
+                return resp.read()
+        except urllib.error.HTTPError as e:
+            raise ServerError(f"GET {path}: HTTP {e.code}: {e.read().decode(errors='replace')}") from e
+        except urllib.error.URLError as e:
+            raise ServerError(f"GET {path}: {e.reason}") from e

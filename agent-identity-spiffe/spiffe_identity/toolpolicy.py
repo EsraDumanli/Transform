@@ -170,6 +170,24 @@ def _bool(v, key):
     return v
 
 
+def _reasons(v, key):
+    from .lifecycle import REASONS
+    _str_list(v, key)
+    bad = [r for r in v if r not in REASONS]
+    if bad:
+        raise ToolPolicyError(f"{key}: unknown reason(s) {bad}; known: {sorted(REASONS)}")
+    return v
+
+
+def _scope_types(v, key):
+    from .lifecycle import SCOPE_PATTERNS
+    _str_list(v, key)
+    bad = [t for t in v if t not in SCOPE_PATTERNS]
+    if bad:
+        raise ToolPolicyError(f"{key}: unknown scope type(s) {bad}; known: {sorted(SCOPE_PATTERNS)}")
+    return v
+
+
 def _attr_list(v, key):
     if not isinstance(v, list) or not all(isinstance(x, str) and x for x in v):
         raise ToolPolicyError(f"{key} must be a list of attribute names (it may be empty)")
@@ -202,6 +220,13 @@ TOOLS: dict[str, dict] = {
     "portal.revoke": {},
     "portal.devices": {},
     "portal.builds": {},
+    "server.svid.list_issued": {},
+    "server.svid.revoke": {"required": {"reasons": _reasons}},
+    "portal.revoke_identity": {},
+    "server.grants.create": {"required": {"max_grant_minutes": _pos_int, "allowed_scope_types": _scope_types}},
+    "server.grants.list": {},
+    "server.grants.withdraw": {},
+    "portal.grants": {},
 }
 
 
@@ -404,7 +429,20 @@ def _check_enroll(lim, a, n):
     return None
 
 
+def _check_revoke(lim, a, n):
+    return None if a["reason"] in lim["reasons"] else f"reason {a['reason']!r} isn't allowed by the policy"
+
+
+def _check_grant(lim, a, n):
+    if a["minutes"] > lim["max_grant_minutes"]:
+        return f"grant of {a['minutes']} min exceeds the policy's {lim['max_grant_minutes']}"
+    bad = [t for t in a["scope_types"] if t not in lim["allowed_scope_types"]]
+    return f"scope type(s) {bad} aren't allowed" if bad else None
+
+
 _CHECKS = {
+    "server.svid.revoke": _check_revoke,
+    "server.grants.create": _check_grant,
     "server.svid.attested": _check_attested,
     "server.nodes.enroll": _check_enroll,
     "discovery.ai_agents.read_manifests": _check_paths,

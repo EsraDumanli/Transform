@@ -1,8 +1,8 @@
-# Identity Revocation: Design Draft (v0.1, for review)
+# Identity Revocation: Design (v0.2; implemented)
 
 **Problem:** today, deleting a registration entry or revoking a device only stops **new** identities. An identity (SVID) that was already issued keeps working until it expires: up to **30 minutes** for attested identities and **60 minutes** for the others in the demo config. If an identity leaks, there's no way to cut it off sooner.
 
-**Status:** design only, nothing built. Items marked **[OPEN]** need your decision ([section 9](#9-open-questions)).
+**Status:** **implemented** on `SPIFFE-Changes`: issuance log, admin revocation with reasons, CA-signed CRL and JWT revocation list, a fail-closed `RevocationChecker`, CLI and portal. All open questions are answered (R5–R8).
 
 ## 0. Decisions made
 
@@ -12,6 +12,10 @@
 | R2 | What can be revoked | **One issued identity at a time:** a single certificate (by serial number) or a single JWT (by its ID). |
 | R3 | When a verifier can't get a fresh list | **Fail closed:** once the list is past its expiry time, verifiers reject every identity until a fresh list arrives. |
 | R4 | Who can revoke | **The admin, through the portal or CLI, with a reason from a fixed list.** It's controlled by a new tool in the locked policy, and every revocation is traced. |
+| R5 | Q1: timing | **Refresh every 1 minute; lists valid for 5 minutes.** A revoked identity is refused within about 1 minute; verifiers survive about 4 minutes of server outage, then refuse everything. Server config `crl_validity_minutes: 5`. |
+| R6 | Q2: reasons | **The proposed five.** |
+| R7 | Q3: cascades | **Not in v1:** deleting an entry or revoking a device leaves issued identities valid until they expire, and the portal says so. |
+| R8 | Q4: button rename | **Yes:** the entry button is now **Delete entry**. |
 
 ## 1. How it works
 

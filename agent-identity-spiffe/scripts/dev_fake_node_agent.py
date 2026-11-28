@@ -78,6 +78,8 @@ def main(argv=None) -> int:
     s.add_argument("--path", required=True)
     s.add_argument("--parent-signing-id")
     s.add_argument("--parent-team-id")
+    s.add_argument("--grant", help="issue under this delegation grant")
+    s.add_argument("--scope", action="append", help="subset of the grant's scopes")
     s.add_argument("--out", required=True)
     a = ap.parse_args(argv)
     cfg = config_mod.load(a.config)
@@ -104,6 +106,8 @@ def main(argv=None) -> int:
         workload["parent"] = {"signing_id": a.parent_signing_id, **({"team_id": a.parent_team_id} if a.parent_team_id else {})}
     request = {"node_id": node_id, "nonce": nonce, "spiffe_id": a.spiffe_id,
                "csr": csr.public_bytes(serialization.Encoding.PEM).decode(), "workload": workload}
+    if a.grant:
+        request["delegation"] = {"grant": a.grant, **({"scopes": a.scope} if a.scope else {})}
     sig = base64.b64encode(key.sign(canonical_json(request), ec.ECDSA(hashes.SHA256()))).decode()
     resp = post(cfg, "/v1/node/svid", {"request": request, "signature": sig})
     out = Path(a.out)
@@ -113,7 +117,9 @@ def main(argv=None) -> int:
     fd = os.open(out / "svid-key.pem", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "wb") as f:
         f.write(wkey.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
-    print(f"attested SVID for {a.spiffe_id}: {resp['ttl_minutes']} min, {resp['attestation']['method']} → {resp['attestation']['confidence']}")
+    d = resp.get("delegation")
+    print(f"attested SVID for {a.spiffe_id}: serial {resp['serial']}, {resp['attestation']['method']} → {resp['attestation']['confidence']}"
+          + (f", acting for {d['principal']} (unverified) with {d['scopes']}" if d else ", service identity"))
     return 0
 
 

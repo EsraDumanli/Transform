@@ -118,10 +118,86 @@ def cmd_entries(args, cfg, gate) -> int:
     return 0
 
 
+def _delegation_arg(args):
+    if not getattr(args, "grant", None):
+        if getattr(args, "scope", None):
+            raise config_mod.ConfigError("--scope needs --grant")
+        return None
+    return {"grant": args.grant, **({"scopes": args.scope} if args.scope else {})}
+
+
 def cmd_jwt(args, cfg, gate) -> int:
     client = Client.from_config(cfg, lambda p: config_mod.resolve_path(cfg, p), gate)
-    print(client.jwt_svid(args.spiffe_id, args.audience))
+    print(client.jwt_svid(args.spiffe_id, args.audience, _delegation_arg(args)))
     return 0
+
+
+def cmd_svids(args, cfg, gate) -> int:
+    client = Client.from_config(cfg, lambda p: config_mod.resolve_path(cfg, p), gate)
+    rows = client.list_svids()
+    print(f"{len(rows)} active identity(ies):")
+    for r in rows:
+        d = r.get("delegation")
+        who = f"acts for {d['principal']} (unverified) · {len(d['scopes'])} scope(s)" if d else "service identity"
+        flag = "  REVOKED" if r.get("revoked") else ""
+        print(f"  {r['kind']:<4} {r['ident']:<34} {r['spiffe_id']:<45} until {r['expires_at']}  {who}{flag}")
+    return 0
+
+
+def cmd_revoke_svid(args, cfg, gate) -> int:
+    client = Client.from_config(cfg, lambda p: config_mod.resolve_path(cfg, p), gate)
+    kind, ident = ("x509", args.serial) if args.serial else ("jwt", args.jti)
+    rev = client.revoke_svid(kind, ident, args.reason, args.approver, args.note or "")
+    print(f"{'revoked' if rev.get('created') else 'already revoked'}: {kind} {ident} ({rev['spiffe_id']}), reason {rev['reason']}")
+    return 0
+
+
+def cmd_grants(args, cfg, gate) -> int:
+    client = Client.from_config(cfg, lambda p: config_mod.resolve_path(cfg, p), gate)
+    for g in client.list_grants():
+        print(f"  {g['id']}  {g['state']:<9} {g['principal']} (unverified) -> {g['agent_spiffe_id']}  until {g['not_after']}  {', '.join(g['scopes'])}")
+    return 0
+
+
+def cmd_grant(args, cfg, gate) -> int:
+    client = Client.from_config(cfg, lambda p: config_mod.resolve_path(cfg, p), gate)
+    g = client.create_grant(args.principal, args.agent, args.scope, args.minutes, args.approver, args.note or "")
+    print(f"grant {g['id']}: {g['principal']} (unverified name) delegates {g['scopes']} to {g['agent_spiffe_id']} until {g['not_after']}")
+    return 0
+
+
+def cmd_withdraw_grant(args, cfg, gate) -> int:
+    client = Client.from_config(cfg, lambda p: config_mod.resolve_path(cfg, p), gate)
+    g = client.withdraw_grant(args.grant, args.approver)
+    print(f"grant {g['id']} withdrawn; identities already issued under it expire by {g['not_after']} at the latest")
+    return 0
+
+
+def _revocation_checker(args, bundle_pem: bytes, jwks: dict | None):
+    """Build a fail-closed checker from --crl/--revoked-jwt files or --server; None if skipped."""
+    from cryptography import x509 as _x509
+    from .lifecycle import RevocationChecker
+    if args.no_revocation_check:
+        print("WARNING: revocation NOT checked (--no-revocation-check)", file=sys.stderr)
+        return None
+    ca_cert = _x509.load_pem_x509_certificates(bundle_pem)[0]
+    if args.server:
+        import ssl
+        import urllib.request
+        ctx = ssl.create_default_context(cadata=bundle_pem.decode())
+        get = lambda p: urllib.request.urlopen(args.server.rstrip("/") + p, timeout=10, context=ctx).read()  # noqa: E731
+        if jwks is None:
+            jwks = json.loads(get("/v1/bundle/jwks"))
+        chk = RevocationChecker(ca_cert, jwks, refresh_seconds=60,
+                                fetch_crl=lambda: get("/v1/crl"), fetch_jwt_list=lambda: get("/v1/revoked-jwt").decode())
+        chk.refresh(force=True)
+        return chk
+    chk = RevocationChecker(ca_cert, jwks or {"keys": []}, refresh_seconds=60)
+    if getattr(args, "crl", None):
+        chk.load_crl(Path(args.crl).read_bytes())
+    if getattr(args, "revoked_jwt", None):
+        chk.load_jwt_list(Path(args.revoked_jwt).read_text().strip())
+    return chk
 
 
 def cmd_portal(args, cfg, gate) -> int:
@@ -197,15 +273,30 @@ def cmd_trace(args) -> int:
 
 
 def cmd_verify_x509(args) -> int:
-    sid = ca.verify_x509_svid(Path(args.cert).read_bytes(), Path(args.bundle).read_bytes())
-    print(f"valid X.509-SVID for {sid}")
+    cert, bundle = Path(args.cert).read_bytes(), Path(args.bundle).read_bytes()
+    sid = ca.verify_x509_svid(cert, bundle)
+    chk = _revocation_checker(args, bundle, None)
+    if chk is not None:
+        chk.check_x509(cert)   # fails closed: raises if revoked or if no fresh list
+    print(f"valid X.509-SVID for {sid}" + ("" if chk is None else " (not revoked)"))
     return 0
 
 
 def cmd_verify_jwt(args) -> int:
     token = Path(args.token_file).read_text().strip()
-    sid = ca.verify_jwt_svid(token, json.loads(Path(args.jwks).read_text()), args.audience)
-    print(f"valid JWT-SVID for {sid} (audience {args.audience})")
+    jwks = json.loads(Path(args.jwks).read_text())
+    sid = ca.verify_jwt_svid(token, jwks, args.audience)
+    claims = ca.jwt_claims_unverified(token)   # already verified above
+    if args.no_revocation_check:
+        print("WARNING: revocation NOT checked (--no-revocation-check)", file=sys.stderr)
+    else:
+        if not args.bundle:
+            raise ca.CAError("--bundle is required to check revocation (or pass --no-revocation-check)")
+        chk = _revocation_checker(args, Path(args.bundle).read_bytes(), jwks)
+        chk.check_jwt(claims.get("jti", ""))
+    d = claims.get("del")
+    extra = f"; acts for {d['principal']} (unverified) with {d['scopes']}" if d else ""
+    print(f"valid JWT-SVID for {sid} (audience {args.audience}){extra}")
     return 0
 
 
@@ -239,6 +330,27 @@ def main(argv=None) -> int:
     p = with_config(sub.add_parser("jwt", help="mint a JWT-SVID for a registered SPIFFE ID"))
     p.add_argument("--spiffe-id", required=True)
     p.add_argument("--audience", required=True, action="append", help="repeat for several audiences")
+    p.add_argument("--grant", help="issue under this delegation grant (acts on behalf of its person)")
+    p.add_argument("--scope", action="append", help="subset of the grant's scopes (repeatable; default: all)")
+    with_config(sub.add_parser("svids", help="list active issued identities (and their delegation)"))
+    p = with_config(sub.add_parser("revoke-svid", help="revoke one issued identity"))
+    g = p.add_mutually_exclusive_group(required=True)
+    g.add_argument("--serial", help="X.509-SVID serial number (hex)")
+    g.add_argument("--jti", help="JWT-SVID ID")
+    p.add_argument("--reason", required=True, choices=["key_compromise", "device_lost", "superseded", "decommissioned", "policy_violation"])
+    p.add_argument("--approver", required=True, help="your name, recorded as revoked_by")
+    p.add_argument("--note")
+    with_config(sub.add_parser("grants", help="list delegation grants"))
+    p = with_config(sub.add_parser("grant", help="create a human -> agent delegation grant"))
+    p.add_argument("--principal", required=True, help="the person the agent will act for (typed name, not verified)")
+    p.add_argument("--agent", required=True, help="the agent's SPIFFE ID (must be registered)")
+    p.add_argument("--scope", required=True, action="append", help="tool:<server>.<tool> | data:path:<glob> | data:host:<host>")
+    p.add_argument("--minutes", required=True, type=int, help="how long the grant lasts (policy maximum applies)")
+    p.add_argument("--approver", required=True, help="your name, recorded as created_by")
+    p.add_argument("--note")
+    p = with_config(sub.add_parser("withdraw-grant", help="withdraw a delegation grant"))
+    p.add_argument("--grant", required=True)
+    p.add_argument("--approver", required=True)
     p = sub.add_parser("trace", help="show the trace of every action (from the tool policy's trace file)")
     src = p.add_mutually_exclusive_group(required=True)
     src.add_argument("--config", help="config whose tool policy names the trace file")
@@ -249,13 +361,21 @@ def main(argv=None) -> int:
     p.add_argument("--denied", action="store_true", help="only actions the policy denied")
     p.add_argument("--last", type=int, help="only the last N events")
     p.add_argument("--json", action="store_true", help="raw JSON lines")
-    p = sub.add_parser("verify-x509", help="verify an X.509-SVID against a trust bundle")
+    def revocation_args(p, kind):
+        g = p.add_mutually_exclusive_group(required=True)
+        g.add_argument("--server", help="fetch the revocation list live from this SPIFFE server URL")
+        g.add_argument("--crl" if kind == "x509" else "--revoked-jwt", help="revocation list file")
+        g.add_argument("--no-revocation-check", action="store_true", help="skip the revocation check (prints a warning)")
+    p = sub.add_parser("verify-x509", help="verify an X.509-SVID against a trust bundle and the revocation list")
     p.add_argument("--cert", required=True)
     p.add_argument("--bundle", required=True)
-    p = sub.add_parser("verify-jwt", help="verify a JWT-SVID against a JWKS bundle")
+    revocation_args(p, "x509")
+    p = sub.add_parser("verify-jwt", help="verify a JWT-SVID against a JWKS bundle and the revocation list")
     p.add_argument("--token-file", required=True)
     p.add_argument("--jwks", required=True)
     p.add_argument("--audience", required=True)
+    p.add_argument("--bundle", help="trust bundle (needed for the revocation check)")
+    revocation_args(p, "jwt")
 
     args = ap.parse_args(argv)
     try:
@@ -267,7 +387,8 @@ def main(argv=None) -> int:
             return cmd_trace(args)
         cfg = config_mod.load(args.config)
         commands = {"discover": cmd_discover, "plan": cmd_plan, "apply": cmd_apply, "entries": cmd_entries,
-                    "jwt": cmd_jwt, "portal": cmd_portal}
+                    "jwt": cmd_jwt, "portal": cmd_portal, "svids": cmd_svids, "revoke-svid": cmd_revoke_svid,
+                    "grants": cmd_grants, "grant": cmd_grant, "withdraw-grant": cmd_withdraw_grant}
         component = "portal" if args.cmd == "portal" else "agent"
         gate = gate_from_config(cfg, component, actor=getattr(args, "approver", "") or "")
         if args.cmd == "portal":  # the portal traces each request as its own run

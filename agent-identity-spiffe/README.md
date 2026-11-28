@@ -45,6 +45,7 @@ spiffe_identity/
   approval.py          the human approval gate
   pipeline.py          discover -> policy -> LLM, and the saved-scan snapshot (shared by CLI + portal)
   nodes.py             device (node) attestation: enrolled keys, one-time challenges, evidence, confidence
+  lifecycle.py         issuance log, revocation (signed CRL + JWT list, fail-closed checker), delegation grants
   toolpolicy.py        deny-by-default tool policy: the single gate every action passes through
   trace.py             the trace file: every decision, result, run and log line as JSON
   portal.py            local web portal (localhost only): view, scan, approve, revoke
@@ -59,7 +60,7 @@ examples/
   manifests/           DEMO FIXTURES: one A2A agent card, one MCP config (made up)
 scripts/               setup.sh (venv + install), demo.sh (full flow in the terminal), portal.sh (server + portal),
                        dev_fake_node_agent.py (TEST ONLY: software-key stand-in for the Mac node agent)
-tests/                 113 tests, no network access needed
+tests/                 127 tests, no network access needed
 ```
 
 ## Quickstart (demo, localhost only)
@@ -102,7 +103,7 @@ agent-discovery apply --config examples/demo.config.json --approver "your-name" 
 ```
 
 ```bash
-agent-discovery verify-x509 --cert out/demo.local_ai-agent_Ticket-Triage-Agent/svid.pem --bundle .data/demo/bundle.pem
+agent-discovery verify-x509 --cert out/demo.local_ai-agent_Ticket-Triage-Agent/svid.pem --bundle .data/demo/bundle.pem --server https://127.0.0.1:8443
 ```
 
 ```bash
@@ -255,6 +256,22 @@ Approve the device in the portal, add a registration entry for it, then:
 python scripts/dev_fake_node_agent.py svid --config examples/demo.config.json --key out/fake-node.pem --spiffe-id spiffe://demo.local/mac/mcp-client --signing-id com.example.mcp-client --cdhash aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --hardened-runtime --path /usr/local/bin/mcp-client --out out/attested
 ```
 The fake agent uses a **software key on disk**, not the Secure Enclave, and its "evidence" is whatever you type. The portal marks its devices **TEST KEY** in red. Never approve one for anything real.
+
+## Revocation and delegation
+
+Designs: [REVOCATION.md](REVOCATION.md) and [DELEGATION.md](DELEGATION.md).
+
+**Revocation:**
+- **Issuance log:** every identity issued is recorded in `issued.jsonl` (never keys). JWTs carry a `jti` so they can be named individually.
+- **Revoking:** the admin revokes one identity at a time (portal **Active identities**, or `agent-discovery revoke-svid --serial … | --jti … --reason … --approver …`). Reasons: `key_compromise`, `device_lost`, `superseded`, `decommissioned`, `policy_violation`. The tool policy limits which are allowed.
+- **Publishing:** the server publishes a **CA-signed X.509 CRL** (`GET /v1/crl`) and a **signed JWT revocation list** (`GET /v1/revoked-jwt`). Each is valid for `crl_validity_minutes` (5 in the demo).
+- **Verifying:** verifiers use `RevocationChecker`, refreshing every 60 seconds and **failing closed**. `verify-x509` and `verify-jwt` require `--server`, a list file, or an explicit `--no-revocation-check`.
+
+**Delegation (human → agent):**
+- **Grants:** the admin creates a grant (portal **Delegation grants**, or `agent-discovery grant --principal … --agent … --scope … --minutes … --approver …`). At most 60 minutes in the demo policy.
+- **Delegated identities:** an agent asks for an identity under a grant (`--grant`, optionally a `--scope` subset). The identity then carries the person, scopes and end time (JWT `del` claim, or a non-critical X.509 extension), never outlives the grant, and can't widen it.
+- **Service identities:** without `--grant`, an agent gets a plain service identity.
+- **Limits:** names are typed and **unverified**, and scopes are **recorded, not yet enforced**. The MCP gateway will enforce them.
 
 ## macOS notes
 

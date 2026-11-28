@@ -100,7 +100,23 @@
       "require_hardened_runtime": "<true|false>"
     },
     "portal.devices": {},
-    "portal.builds": {}
+    "portal.builds": {},
+    "server.svid.list_issued": {},
+    "server.svid.revoke": {
+      "reasons": [
+        "<subset of: key_compromise, device_lost, superseded, decommissioned, policy_violation>"
+      ]
+    },
+    "portal.revoke_identity": {},
+    "server.grants.create": {
+      "max_grant_minutes": "<int>",
+      "allowed_scope_types": [
+        "<subset of: tool, data:path, data:host>"
+      ]
+    },
+    "server.grants.list": {},
+    "server.grants.withdraw": {},
+    "portal.grants": {}
   },
   "attestation_rubric": {
     "macos-se-node+codesign": "<high|medium|low>",

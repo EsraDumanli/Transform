@@ -12,7 +12,8 @@
     "ca_ttl_hours": 24,
     "x509_svid_ttl_minutes": 60,
     "jwt_svid_ttl_minutes": 5,
-    "attested_svid_ttl_minutes": 30
+    "attested_svid_ttl_minutes": 30,
+    "crl_validity_minutes": 5
   },
 
   "client": {

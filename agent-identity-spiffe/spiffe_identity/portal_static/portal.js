@@ -82,6 +82,8 @@ function render() {
   renderWorkloads(proposals, statuses);
   renderDevices();
   renderBuilds();
+  renderIdentities();
+  renderGrants();
   renderEntries(proposals);
 }
 
@@ -164,7 +166,7 @@ function renderWorkloads(proposals, statuses) {
       b.addEventListener("click", (ev) => { ev.stopPropagation(); approve(p, b); });
       act.append(b);
     } else if (st.key === "registered") {
-      const b = el("button", { cls: "btn small danger", text: "Revoke" });
+      const b = el("button", { cls: "btn small danger", text: "Delete entry" });
       b.type = "button";
       b.addEventListener("click", (ev) => { ev.stopPropagation(); revoke(st.entry, b); });
       act.append(b);
@@ -220,7 +222,7 @@ function renderEntries(proposals) {
     const inScan = proposals.some((p) => p.spiffe_id === e.spiffe_id && sameSelectors(e.selectors, p.workload.selectors));
     const idCell = el("td", { cls: "id mono", text: e.spiffe_id });
     if (!inScan) idCell.append(el("span", { cls: "reason", text: "not seen in the last scan" }));
-    const b = el("button", { cls: "btn small danger", text: "Revoke" });
+    const b = el("button", { cls: "btn small danger", text: "Delete entry" });
     b.type = "button";
     b.addEventListener("click", () => revoke(e, b));
     body.append(el("tr", {}, idCell, el("td", {}, badge(e.extra && e.extra.attestation)), el("td", { cls: "hide-sm", text: e.source || "—" }), el("td", { cls: "hide-sm", text: e.assigned_by || "—" }),
@@ -302,6 +304,95 @@ function renderBuilds() {
   }
 }
 
+function fmtTime(iso) { return new Date(iso).toLocaleString(); }
+
+function renderIdentities() {
+  const body = $("sv-body"), empty = $("sv-empty");
+  body.replaceChildren();
+  if (!state.svids) { empty.hidden = false; empty.textContent = state.lifecycle_error || "Unavailable."; return; }
+  empty.hidden = state.svids.length > 0;
+  empty.textContent = "No active identities. Identities appear here when the server issues them.";
+  for (const r of state.svids) {
+    const idCell = el("td", { cls: "id mono", text: r.spiffe_id });
+    idCell.append(el("span", { cls: "reason", text: `${r.kind === "x509" ? "X.509" : "JWT"} · ${r.ident.slice(0, 16)}…`, title: r.ident }));
+    const d = r.delegation;
+    const actsFor = el("td");
+    if (d) {
+      actsFor.append(el("strong", { text: d.principal }), el("span", { cls: "unverified", text: d.principal_verified ? "" : "unverified name" }));
+      actsFor.append(el("span", { cls: "reason", text: `${d.scopes.length} scope(s) · until ${new Date(d.until * 1000).toLocaleTimeString()}`, title: d.scopes.join("\n") }));
+    } else {
+      actsFor.append(el("span", { cls: "muted", text: "service identity" }));
+    }
+    const status = el("td", {}, el("span", { cls: `pill ${r.revoked ? "unassigned" : "registered"}`, text: r.revoked ? "Revoked" : "Active" }));
+    const act = el("td", { cls: "act" });
+    if (!r.revoked && state.revoke_reasons.length) {
+      const wrap = el("div", { cls: "rv" });
+      const sel = el("select", { title: "Reason" });
+      sel.setAttribute("aria-label", "Revocation reason");
+      for (const reason of state.revoke_reasons) { const o = el("option", { text: reason.replace("_", " ") }); o.value = reason; sel.append(o); }
+      const b = el("button", { cls: "btn small danger", text: "Revoke" });
+      b.type = "button";
+      b.addEventListener("click", async () => {
+        if (!confirm(`Revoke this identity?\n\n${r.spiffe_id}\n${r.kind} ${r.ident}\nReason: ${sel.value}\n\nVerifiers will refuse it within about a minute. This can't be undone. It will be recorded as revoked by ${state.approver}.`)) return;
+        if (await run(b, "Revoking…", () => api("/api/revoke-identity", { kind: r.kind, ident: r.ident, reason: sel.value }))) banner(`Revoked ${r.kind} ${r.ident.slice(0, 12)}… (${sel.value})`, "info");
+      });
+      wrap.append(sel, b);
+      act.append(wrap);
+    }
+    body.append(el("tr", {}, idCell, actsFor, el("td", {}, badge(r.confidence ? { method: r.method, confidence: r.confidence } : null)),
+      el("td", { cls: "hide-sm", text: fmtTime(r.expires_at) }), status, act));
+  }
+}
+
+function renderGrants() {
+  const body = $("gr-body"), empty = $("gr-empty"), form = $("grant-form");
+  body.replaceChildren();
+  const lim = state.grant_limits;
+  form.hidden = !lim;
+  if (lim) {
+    $("g-minutes").max = lim.max_grant_minutes;
+    $("g-limits").textContent = `Policy: at most ${lim.max_grant_minutes} min · scope types: ${lim.allowed_scope_types.join(", ")}`;
+    const sel = $("g-agent"), current = sel.value;
+    const ids = [...new Set((state.entries || []).map((e) => e.spiffe_id))].sort();
+    sel.replaceChildren(...ids.map((id) => { const o = el("option", { text: id }); o.value = id; return o; }));
+    if (ids.includes(current)) sel.value = current;
+  }
+  if (!state.grants) { empty.hidden = false; empty.textContent = state.lifecycle_error || "Delegation isn't enabled in the tool policy."; return; }
+  empty.hidden = state.grants.length > 0;
+  empty.textContent = "No delegation grants yet.";
+  const pillFor = { active: "registered", withdrawn: "unassigned", expired: "unassigned", not_yet_valid: "pending" };
+  for (const g of state.grants) {
+    const act = el("td", { cls: "act" });
+    if (g.state === "active") {
+      const b = el("button", { cls: "btn small danger", text: "Withdraw" });
+      b.type = "button";
+      b.addEventListener("click", async () => {
+        if (!confirm(`Withdraw the grant from ${g.principal} to ${g.agent_spiffe_id}?\n\nNo new delegated identities will be issued under it. Ones already issued end by ${fmtTime(g.not_after)} at the latest.`)) return;
+        if (await run(b, "Withdrawing…", () => api("/api/withdraw-grant", { grant_id: g.id }))) banner(`Withdrew grant ${g.id}`, "info");
+      });
+      act.append(b);
+    }
+    const who = el("td", {}, el("strong", { text: g.principal }), el("span", { cls: "unverified", text: g.principal_verified ? "" : "unverified name" }));
+    who.append(el("span", { cls: "reason", text: `by ${g.created_by}` }));
+    body.append(el("tr", {}, who, el("td", { cls: "id mono", text: g.agent_spiffe_id }),
+      el("td", { cls: "hide-sm mono lines", text: g.scopes.join("\n") }), el("td", { text: fmtTime(g.not_after) }),
+      el("td", {}, el("span", { cls: `pill ${pillFor[g.state] || "unknown"}`, text: g.state.replace(/_/g, " ") })), act));
+  }
+}
+
+$("grant-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const scopes = $("g-scopes").value.split("\n").map((x) => x.trim()).filter(Boolean);
+  const body = { principal: $("g-principal").value.trim(), agent_spiffe_id: $("g-agent").value, scopes,
+    minutes: parseInt($("g-minutes").value, 10), note: $("g-note").value.trim() };
+  if (!confirm(`Create a delegation grant?\n\n${body.principal} (typed name, not verified) delegates to ${body.agent_spiffe_id}:\n${scopes.join("\n")}\n\nfor ${body.minutes} minute(s). Scopes are recorded, not yet enforced.`)) return;
+  if (await run($("g-create"), "Creating…", () => api("/api/grant", body))) {
+    $("g-create").disabled = false; $("g-create").textContent = "Create grant";
+    $("grant-form").reset();
+    banner(`Grant created: ${body.principal} → ${body.agent_spiffe_id}`, "info");
+  }
+});
+
 // ---- actions ------------------------------------------------------------------
 
 async function run(btn, label, fn) {
@@ -333,9 +424,18 @@ async function approve(p, btn) {
   if (await run(btn, "Approving…", () => api("/api/approve", { proposal_id: p.id }))) banner(`Registered ${p.spiffe_id}`, "info");
 }
 
+function stillActive(spiffeId) {
+  return (state.svids || []).filter((r) => r.spiffe_id === spiffeId && !r.revoked);
+}
+
 async function revoke(entry, btn) {
-  if (!confirm(`Revoke ${entry.spiffe_id}?\n\nThe server will stop issuing SVIDs for it. SVIDs already issued stay valid until they expire.`)) return;
-  if (await run(btn, "Revoking…", () => api("/api/revoke", { entry_id: entry.id }))) banner(`Revoked ${entry.spiffe_id}`, "info");
+  const live = stillActive(entry.spiffe_id);
+  const tail = live.length ? `\n\n${live.length} identity(ies) already issued for it stay valid until they expire, unless you revoke them in Active identities.` : "";
+  if (!confirm(`Delete the registration entry for ${entry.spiffe_id}?\n\nThe server stops issuing new identities for it.${tail}`)) return;
+  if (await run(btn, "Deleting…", () => api("/api/revoke", { entry_id: entry.id }))) {
+    const n = stillActive(entry.spiffe_id).length;
+    banner(`Deleted the entry for ${entry.spiffe_id}.` + (n ? ` ${n} issued identity(ies) are still valid until they expire; revoke them below if needed.` : ""), n ? "error" : "info");
+  }
 }
 
 $("scan-btn").addEventListener("click", async () => {

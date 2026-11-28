@@ -1,21 +1,15 @@
 {
-  "_comment": "Tool policy for examples/my-laptop.config.json: deny by default. Allows reading Claude Desktop and Cursor config folders plus the demo fixtures, listing processes with ps, the local SPIFFE server, and demo.local identities under /ai-agent, /mcp and /agent/job-search-agent. Kubernetes, Docker, network scans, A2A probes and the LLM are blocked.",
+  "_comment": "Tool policy for examples/laptop.config.json: deny by default. Allows reading only Claude Desktop's config folder and Claude Code's ~/.claude.json, listing processes with ps, the local SPIFFE server, identities under /ai-agent, /mcp, /agent/job-search-agent and /mac, device attestation, revocation and delegation grants (at most 60 minutes). Kubernetes, Docker, network scans, A2A probes and the LLM are blocked.",
   "version": 1,
   "default": "deny",
   "trace": {
-    "file": "../.data/demo/trace.jsonl"
+    "file": "../.data/laptop/trace.jsonl"
   },
   "tools": {
     "discovery.ai_agents.read_manifests": {
       "paths": [
         "~/Library/Application Support/Claude",
-        "~/.cursor",
-        "manifests"
-      ]
-    },
-    "discovery.processes.read": {
-      "methods": [
-        "ps"
+        "~/.claude.json"
       ]
     },
     "server.connect": {
@@ -28,7 +22,8 @@
       "spiffe_id_prefixes": [
         "spiffe://demo.local/ai-agent/",
         "spiffe://demo.local/mcp/",
-        "spiffe://demo.local/agent/job-search-agent"
+        "spiffe://demo.local/agent/job-search-agent",
+        "spiffe://demo.local/mac/"
       ]
     },
     "server.entries.delete": {},
@@ -36,11 +31,78 @@
       "spiffe_id_prefixes": [
         "spiffe://demo.local/ai-agent/",
         "spiffe://demo.local/mcp/",
-        "spiffe://demo.local/agent/job-search-agent"
+        "spiffe://demo.local/agent/job-search-agent",
+        "spiffe://demo.local/mac/"
+      ]
+    },
+    "server.svid.jwt": {
+      "spiffe_id_prefixes": [
+        "spiffe://demo.local/ai-agent/",
+        "spiffe://demo.local/mcp/",
+        "spiffe://demo.local/agent/job-search-agent",
+        "spiffe://demo.local/mac/"
+      ],
+      "audiences": [
+        "ticket-api"
       ]
     },
     "portal.scan": {},
     "portal.approve": {},
-    "portal.revoke": {}
+    "portal.revoke": {},
+    "server.nodes.enroll": {
+      "max_pending": 5
+    },
+    "server.nodes.list": {},
+    "server.nodes.manage": {},
+    "server.nodes.challenge": {},
+    "server.svid.attested": {
+      "spiffe_id_prefixes": [
+        "spiffe://demo.local/mac/"
+      ],
+      "max_ttl_minutes": 30,
+      "require_hardened_runtime": true
+    },
+    "portal.devices": {},
+    "portal.builds": {},
+    "server.svid.list_issued": {},
+    "server.svid.revoke": {
+      "reasons": [
+        "key_compromise",
+        "device_lost",
+        "superseded",
+        "decommissioned",
+        "policy_violation"
+      ]
+    },
+    "portal.revoke_identity": {},
+    "server.grants.create": {
+      "max_grant_minutes": 60,
+      "allowed_scope_types": [
+        "tool",
+        "data:path",
+        "data:host"
+      ]
+    },
+    "server.grants.list": {},
+    "server.grants.withdraw": {},
+    "portal.grants": {},
+    "discovery.processes.read": {
+      "methods": [
+        "ps"
+      ]
+    }
+  },
+  "attestation_rubric": {
+    "_comment": "Owner decisions: no method is High without Apple attestation (none available without MDM / a Developer membership). Medium means device and program both verified, or a trusted platform observation. Unlisted methods are Low.",
+    "macos-se-node+codesign": "medium",
+    "macos-codesign-parent": "low",
+    "macos-se-node": "low",
+    "k8s-api": "medium",
+    "docker-image": "medium",
+    "process-path": "medium",
+    "process-name": "low",
+    "a2a-card": "low",
+    "mcp-config": "low",
+    "network-addr": "low"
   }
 }

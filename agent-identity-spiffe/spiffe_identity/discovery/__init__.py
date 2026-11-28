@@ -18,7 +18,7 @@ SOURCES = {
 
 # Settings that hold file paths, resolved relative to the config file.
 _PATH_KEYS = {
-    "ai_agents": ("manifest_dirs",),
+    "ai_agents": ("manifest_dirs", "manifest_files"),
     "kubernetes": ("token_file", "ca_file"),
     "docker": ("socket",),  # Docker Desktop on macOS often uses ~/.docker/run/docker.sock
 }

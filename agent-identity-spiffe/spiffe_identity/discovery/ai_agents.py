@@ -8,6 +8,9 @@ Two methods, both opt-in:
     - MCP server configs (``.mcp.json``, ``mcp.json``,
       ``claude_desktop_config.json``) with an ``mcpServers`` object; each
       server becomes one workload.
+* Read ``manifest_files``: specific files, e.g. Claude Code's ``~/.claude.json``
+  (user-scoped ``mcpServers`` plus per-project ``projects.<path>.mcpServers``).
+  Only the MCP server entries are read; nothing else in the file is kept.
 * Probe ``a2a_urls`` for ``/.well-known/agent-card.json`` (and the older
   ``/.well-known/agent.json``).
 """
@@ -34,13 +37,14 @@ class AIAgents:
 
     def __init__(self, cfg: dict, gate, opener=None):
         self.dirs = cfg.get("manifest_dirs") or []
+        self.files = cfg.get("manifest_files") or []
         self.max_depth = cfg.get("max_depth")
         self.urls = cfg.get("a2a_urls") or []
         self.timeout = cfg.get("timeout_seconds")
         self.gate = gate
         self._open = opener or _gated_opener(gate).open
-        if not self.dirs and not self.urls:
-            raise ConfigError("ai-agents: set manifest_dirs and/or a2a_urls; nothing is scanned by default")
+        if not self.dirs and not self.files and not self.urls:
+            raise ConfigError("ai-agents: set manifest_dirs, manifest_files and/or a2a_urls; nothing is scanned by default")
         if self.dirs and not (isinstance(self.max_depth, int) and self.max_depth > 0):
             raise ConfigError("ai-agents: max_depth must be a positive integer when manifest_dirs is set")
         if self.urls and not (isinstance(self.timeout, (int, float)) and self.timeout > 0):
@@ -60,6 +64,22 @@ class AIAgents:
                 continue
             out += ws
             warns += w
+        for f in self.files:
+            path = Path(f).expanduser()
+            if not path.is_file():
+                warns.append(f"ai-agents: {path} not found (skipped)")
+                continue
+            try:
+                with self.gate.action("discovery.ai_agents.read_manifests", path=str(path)) as summary:
+                    ws = parse_mcp_file(path)
+                    summary["workloads"] = len(ws)
+            except ToolDenied as e:
+                warns.append(f"ai-agents: {e}")
+                continue
+            except (OSError, ValueError) as e:
+                warns.append(f"ai-agents: {path}: {e}")
+                continue
+            out += ws
         for u in self.urls:
             try:
                 out.append(self._probe(u))
@@ -178,34 +198,66 @@ def parse_a2a_file(path: Path) -> Workload | None:
     return _card_workload(card, str(path.resolve()))
 
 
+def _safe_url(url: str) -> str:
+    """Keep scheme, host and path only: query strings and user:password@ often carry tokens."""
+    from urllib.parse import urlsplit, urlunsplit
+    try:
+        u = urlsplit(url)
+    except ValueError:
+        return "(unparseable URL)"
+    host = u.hostname or ""
+    if u.port:
+        host = f"{host}:{u.port}"
+    return urlunsplit((u.scheme, host, u.path, "", ""))
+
+
 def parse_mcp_file(path: Path) -> list[Workload]:
     try:
         data = json.loads(path.read_text())
     except json.JSONDecodeError as e:
         raise ValueError(f"not valid JSON: {e}") from e
-    servers = data.get("mcpServers") if isinstance(data, dict) else None
-    if not isinstance(servers, dict):
+    if not isinstance(data, dict):
         return []
     origin = str(path.resolve())
+    out = _mcp_servers(data.get("mcpServers"), origin, scope="user" if path.name == ".claude.json" else "")
+    # Claude Code keeps project-scoped servers under projects.<project path>.mcpServers
+    projects = data.get("projects")
+    if isinstance(projects, dict):
+        for proj in sorted(projects):
+            entry = projects[proj]
+            if isinstance(entry, dict):
+                out += _mcp_servers(entry.get("mcpServers"), origin, scope="project", project=str(proj))
+    return out
+
+
+def _mcp_servers(servers, origin: str, scope: str = "", project: str = "") -> list[Workload]:
+    if not isinstance(servers, dict):
+        return []
     out = []
     for name in sorted(servers):
         s = servers[name] if isinstance(servers[name], dict) else {}
         attrs = {"protocol": "mcp", "origin": origin, "server_name": name}
+        if scope:
+            attrs["scope"] = scope
+        if project:
+            attrs["project"] = project
         transport = s.get("type") or ("http" if s.get("url") else "stdio" if s.get("command") else "")
         if transport:
             attrs["transport"] = transport
         if s.get("command"):
             attrs["command"] = str(s["command"])
         if s.get("url"):
-            attrs["url"] = str(s["url"])
+            attrs["url"] = _safe_url(str(s["url"]))
         # args and env often hold secrets (tokens on the command line), so they
         # are counted, never copied.
         if s.get("args"):
             attrs["arg_count"] = str(len(s["args"]))
         if s.get("env"):
             attrs["env_count"] = str(len(s["env"]))
+        selectors = [f"ai:mcp-config:{origin}", f"ai:mcp-server:{name}"]
+        if project:
+            selectors.append(f"ai:mcp-project:{project}")
         out.append(Workload(
-            source="ai-agents", kind=KIND_MCP_SERVER, name=name, attributes=attrs,
-            selectors=[f"ai:mcp-config:{origin}", f"ai:mcp-server:{name}"],
+            source="ai-agents", kind=KIND_MCP_SERVER, name=name, attributes=attrs, selectors=selectors,
         ))
     return out

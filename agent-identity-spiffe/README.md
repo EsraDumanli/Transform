@@ -54,13 +54,14 @@ spiffe_identity/
 examples/
   demo.config.json     localhost demo against the made-up fixtures below
   demo.tool-policy.json   tool policy for the demo (allows only what the demo needs)
-  laptop.tool-policy.json tool policy for scanning your own Mac (see "Tool policy and trace")
+  laptop.config.json   scans YOUR computer: Claude Desktop, Claude Code (~/.claude.json), agent processes
+  laptop.tool-policy.json tool policy for laptop.config.json (reads only those two places; all features on)
   tool-policy.template.json every tool and limit, with <placeholders>
   config.template.json every option, with <placeholders> you fill in
   manifests/           DEMO FIXTURES: one A2A agent card, one MCP config (made up)
 scripts/               setup.sh (venv + install), demo.sh (full flow in the terminal), portal.sh (server + portal),
                        dev_fake_node_agent.py (TEST ONLY: software-key stand-in for the Mac node agent)
-tests/                 127 tests, no network access needed
+tests/                 131 tests, no network access needed
 ```
 
 ## Quickstart (demo, localhost only)
@@ -111,6 +112,36 @@ agent-discovery jwt --config examples/demo.config.json --spiffe-id spiffe://demo
 ```
 
 `python -m spiffe_identity.cli ...` and `python -m spiffe_identity.server ...` work without installing, as long as you run them from this folder.
+
+## Run it on your own computer (detect your real agents)
+
+The demo only scans made-up files. To scan **your** machine instead:
+
+```bash
+export SPIFFE_ADMIN_TOKEN=$(python -c 'import secrets; print(secrets.token_urlsafe(32))')
+```
+
+```bash
+CONFIG=examples/laptop.config.json ./scripts/portal.sh "Your Name"
+```
+
+Then click **Scan now**. `examples/laptop.config.json` looks in:
+
+| Where | What it finds |
+|---|---|
+| `~/Library/Application Support/Claude/claude_desktop_config.json` | Claude Desktop's MCP servers |
+| `~/.claude.json` | Claude Code's MCP servers, both user-wide and per-project (shown with the project path) |
+| Running processes (`ps`) | Python / Node / `npx` / `uvx` processes whose command line contains `app.py`, `mcp` or `modelcontextprotocol`, e.g. the Job Search Agent started with `python app.py`, or running MCP servers |
+
+**Notes:**
+- **Only those places are read.** The tool policy (`examples/laptop.tool-policy.json`) allows reading only those two paths. Everything else (other folders, Docker, Kubernetes, network scans, the LLM) is blocked, and every read is in the trace.
+- **Secrets aren't kept:**
+  - MCP server arguments and environment variables are **counted, not copied**,
+  - query strings and `user:password@` are **removed from URLs**,
+  - nothing else in `~/.claude.json` is kept.
+- **Separate data:** it uses `.data/laptop`, so demo data doesn't mix in. Delete that folder to start over.
+- **To scan more places** (e.g. `.mcp.json` files in your code folders): add the folder to `manifest_dirs` in the config **and** to `discovery.ai_agents.read_manifests.paths` in the policy. Both are needed; the policy decides.
+- **"0 workloads"** with a warning like "not a directory" just means that app isn't installed or has no MCP servers configured.
 
 ## The portal
 

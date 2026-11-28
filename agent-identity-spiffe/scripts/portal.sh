@@ -17,7 +17,9 @@ export SPIFFE_ADMIN_TOKEN="${SPIFFE_ADMIN_TOKEN:-$("$PY" -c 'import secrets; pri
 "$PY" -m spiffe_identity.server --config "$CONFIG" &
 SERVER_PID=$!
 trap 'kill $SERVER_PID 2>/dev/null' EXIT
-for _ in $(seq 1 20); do [ -f .data/demo/bundle.pem ] && break; sleep 0.25; done
+# Wait for the server to write the trust bundle named in this config (demo or laptop).
+BUNDLE=$("$PY" -c 'import sys; from spiffe_identity import config as c; cfg=c.load(sys.argv[1]); print(c.resolve_path(cfg, cfg["client"]["bundle_file"]))' "$CONFIG")
+for _ in $(seq 1 20); do [ -f "$BUNDLE" ] && break; sleep 0.25; done
 sleep 0.5
 if ! kill -0 "$SERVER_PID" 2>/dev/null; then
   echo "error: the SPIFFE server did not start; see the message above." >&2

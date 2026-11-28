@@ -11,7 +11,9 @@
     "tls_ip_addresses": [],
     "ca_ttl_hours": "<int>",
     "x509_svid_ttl_minutes": "<int>",
-    "jwt_svid_ttl_minutes": "<int>"
+    "jwt_svid_ttl_minutes": "<int>",
+    "attested_svid_ttl_minutes": "<int, only if server.svid.attested is in the policy>",
+    "crl_validity_minutes": "<int, only if server.svid.revoke is in the policy; verifiers fail closed after this>"
   },
 
   "client": {

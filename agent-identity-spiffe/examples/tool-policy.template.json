@@ -85,6 +85,49 @@
     },
     "portal.scan": {},
     "portal.approve": {},
-    "portal.revoke": {}
+    "portal.revoke": {},
+    "server.nodes.enroll": {
+      "max_pending": "<int: how many enrollments may wait for approval>"
+    },
+    "server.nodes.list": {},
+    "server.nodes.manage": {},
+    "server.nodes.challenge": {},
+    "server.svid.attested": {
+      "spiffe_id_prefixes": [
+        "<spiffe://your-td/mac/>"
+      ],
+      "max_ttl_minutes": "<int>",
+      "require_hardened_runtime": "<true|false>"
+    },
+    "portal.devices": {},
+    "portal.builds": {},
+    "server.svid.list_issued": {},
+    "server.svid.revoke": {
+      "reasons": [
+        "<subset of: key_compromise, device_lost, superseded, decommissioned, policy_violation>"
+      ]
+    },
+    "portal.revoke_identity": {},
+    "server.grants.create": {
+      "max_grant_minutes": "<int>",
+      "allowed_scope_types": [
+        "<subset of: tool, data:path, data:host>"
+      ]
+    },
+    "server.grants.list": {},
+    "server.grants.withdraw": {},
+    "portal.grants": {}
+  },
+  "attestation_rubric": {
+    "macos-se-node+codesign": "<high|medium|low>",
+    "macos-codesign-parent": "<high|medium|low>",
+    "macos-se-node": "<high|medium|low>",
+    "k8s-api": "<high|medium|low>",
+    "docker-image": "<high|medium|low>",
+    "process-path": "<high|medium|low>",
+    "process-name": "<high|medium|low>",
+    "a2a-card": "<high|medium|low>",
+    "mcp-config": "<high|medium|low>",
+    "network-addr": "<high|medium|low>"
   }
 }

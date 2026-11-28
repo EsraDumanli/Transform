@@ -47,6 +47,7 @@ from importlib import resources
 
 from . import config as config_mod, pipeline
 from .client import Client, ServerError
+from .nodes import attestation_method, confidence
 from .toolpolicy import ToolDenied, ToolGate
 from .trace import TraceError
 
@@ -109,13 +110,40 @@ class Portal:
         except (ServerError, ToolDenied) as e:
             return None, str(e)
 
+    def _devices(self) -> tuple[list[dict] | None, list[dict] | None, str]:
+        if self.client is None or "server.nodes.list" not in self.gate.policy.tools:
+            return None, None, "device attestation isn't enabled in the tool policy"
+        try:
+            return self.client.list_nodes(), self.client.list_builds(), ""
+        except (ServerError, ToolDenied) as e:
+            return None, None, str(e)
+
+    def _lifecycle(self) -> tuple[list[dict] | None, list[dict] | None, str]:
+        tools = self.gate.policy.tools
+        if self.client is None or "server.svid.list_issued" not in tools:
+            return None, None, "identity revocation and delegation aren't enabled in the tool policy"
+        try:
+            svids = self.client.list_svids()
+            grants = self.client.list_grants() if "server.grants.list" in tools else None
+            return svids, grants, ""
+        except (ServerError, ToolDenied) as e:
+            return None, None, str(e)
+
     def state(self) -> dict:
         snap, snap_error = None, ""
         try:
             snap = pipeline.load_snapshot(self.scan_path, self.cfg["trust_domain"])
         except (ValueError, OSError) as e:
             snap_error = str(e)
+        rubric = self.gate.policy.rubric or {}
+        if snap:
+            for p in snap["proposals"]:
+                method = attestation_method(p["workload"]["selectors"])
+                p["attestation"] = {"method": method, "confidence": confidence(method, rubric)}
         entries, entries_error = self._entries()
+        nodes, builds, devices_error = self._devices()
+        svids, grants, lifecycle_error = self._lifecycle()
+        tools = self.gate.policy.tools
         llm_cfg = self.cfg.get("llm") or {}
         return {
             "trust_domain": self.cfg["trust_domain"],
@@ -126,6 +154,15 @@ class Portal:
             "scan_file": self.scan_path,
             "entries": entries,
             "entries_error": entries_error,
+            "nodes": nodes,
+            "builds": builds,
+            "devices_error": devices_error,
+            "svids": svids,
+            "grants": grants,
+            "lifecycle_error": lifecycle_error,
+            "revoke_reasons": tools.get("server.svid.revoke", {}).get("reasons", []),
+            "grant_limits": {k: tools["server.grants.create"][k] for k in ("max_grant_minutes", "allowed_scope_types")}
+                            if "server.grants.create" in tools else None,
         }
 
     # ---- actions --------------------------------------------------------------
@@ -169,6 +206,46 @@ class Portal:
         with self.gate.action("portal.revoke", entry_id=entry_id):
             self.client.delete_entry(entry_id)
         log.info("revoked entry %s", entry_id)
+        return self.state()
+
+    def revoke_identity(self, kind: str, ident: str, reason: str, note: str) -> dict:
+        if self.client is None:
+            raise PortalError("no SPIFFE server client configured")
+        with self.gate.action("portal.revoke_identity", kind=kind, ident=ident, reason=reason):
+            self.client.revoke_svid(kind, ident, reason, self.approver, note)
+        log.info("revoked %s %s (%s) by %s", kind, ident, reason, self.approver)
+        return self.state()
+
+    def create_grant(self, principal: str, agent: str, scopes, minutes, note: str) -> dict:
+        if self.client is None:
+            raise PortalError("no SPIFFE server client configured")
+        if not isinstance(scopes, list) or not isinstance(minutes, int) or isinstance(minutes, bool):
+            raise PortalError("scopes must be a list and minutes a whole number")
+        with self.gate.action("portal.grants", action="create", principal=principal[:100], agent=agent):
+            self.client.create_grant(principal, agent, scopes, minutes, self.approver, note)
+        return self.state()
+
+    def withdraw_grant(self, grant_id: str) -> dict:
+        if self.client is None:
+            raise PortalError("no SPIFFE server client configured")
+        with self.gate.action("portal.grants", action="withdraw", grant=grant_id):
+            self.client.withdraw_grant(grant_id, self.approver)
+        return self.state()
+
+    def device(self, node_id: str, action: str) -> dict:
+        if self.client is None:
+            raise PortalError("no SPIFFE server client configured")
+        with self.gate.action("portal.devices", node_id=node_id, action=action):
+            self.client.node_action(node_id, action, self.approver)
+        log.info("device %s: %s by %s", node_id[:8], action, self.approver)
+        return self.state()
+
+    def build(self, build_id: str, action: str) -> dict:
+        if self.client is None:
+            raise PortalError("no SPIFFE server client configured")
+        with self.gate.action("portal.builds", build_id=build_id, action=action):
+            self.client.build_action(build_id, action, self.approver)
+        log.info("build %s: %s by %s", build_id, action, self.approver)
         return self.state()
 
     # ---- HTTP -----------------------------------------------------------------
@@ -216,7 +293,9 @@ class Portal:
         except ValueError:
             return _json(400, {"error": "body must be a JSON object"})
 
-        action = {"/api/scan": "scan", "/api/approve": "approve", "/api/revoke": "revoke"}.get(path)
+        action = {"/api/scan": "scan", "/api/approve": "approve", "/api/revoke": "revoke",
+                  "/api/device": "devices", "/api/build": "builds", "/api/revoke-identity": "revoke_identity",
+                  "/api/grant": "grant", "/api/withdraw-grant": "withdraw_grant"}.get(path)
         if action is None:
             return _json(404, {"error": "not found"})
         try:
@@ -225,6 +304,18 @@ class Portal:
                     return _json(200, self.scan())
                 if action == "approve":
                     return _json(200, self.approve(str(req.get("proposal_id", ""))))
+                if action == "revoke_identity":
+                    return _json(200, self.revoke_identity(str(req.get("kind", "")), str(req.get("ident", "")),
+                                                           str(req.get("reason", "")), str(req.get("note", ""))))
+                if action == "grant":
+                    return _json(200, self.create_grant(str(req.get("principal", "")), str(req.get("agent_spiffe_id", "")),
+                                                        req.get("scopes"), req.get("minutes"), str(req.get("note", ""))))
+                if action == "withdraw_grant":
+                    return _json(200, self.withdraw_grant(str(req.get("grant_id", ""))))
+                if action == "devices":
+                    return _json(200, self.device(str(req.get("node_id", "")), str(req.get("action", ""))))
+                if action == "builds":
+                    return _json(200, self.build(str(req.get("build_id", "")), str(req.get("action", ""))))
                 return _json(200, self.revoke(str(req.get("entry_id", ""))))
         except ToolDenied as e:
             return _json(403, {"error": str(e)})

@@ -47,7 +47,10 @@ def test_laptop_config_finds_local_agents_and_reads_nothing_else(tmp_path, monke
     cfg["discovery"].pop("processes")                                  # don't depend on this machine's processes
     scan = pipeline.plan(cfg, gate, use_llm=False)
     found = {p.workload.name: p for p in scan.proposals}
-    assert set(found) == {"filesystem", "github", "tickets"}           # no demo fixtures
+    demo = {"Ticket Triage Agent", "ticket-api", "notes-search"}         # demo fixtures, labelled
+    assert set(found) == {"github", "tickets"} | demo | {"filesystem"}
+    assert all(found[n].workload.attributes.get("label") == "demo" for n in demo)
+    assert "label" not in found["github"].workload.attributes and "label" not in found["tickets"].workload.attributes
     assert found["github"].spiffe_id == "spiffe://demo.local/mcp/http/github"
     assert found["tickets"].spiffe_id == "spiffe://demo.local/mcp/stdio/tickets"
     trace = (tmp_path / "trace.jsonl").read_text()
@@ -60,3 +63,21 @@ def test_laptop_policy_blocks_other_folders(tmp_path, monkeypatch):
     assert policy.decide("discovery.ai_agents.read_manifests", {"path": str(Path.home() / ".claude.json")}) is None
     assert policy.decide("discovery.ai_agents.read_manifests", {"path": str(Path.home() / ".ssh/config")}) is not None
     assert policy.decide("discovery.docker.list_containers", {"socket": "/var/run/docker.sock"}) is not None
+
+
+def test_per_folder_depth_and_label(tmp_path, monkeypatch):
+    from spiffe_identity.discovery import AIAgents
+    from spiffe_identity.discovery.base import ConfigError
+    import pytest
+    from tests.helpers import make_gate
+    deep = tmp_path / "a" / "b"
+    deep.mkdir(parents=True)
+    (deep / "agent-card.json").write_text(json.dumps({"name": "Deep", "url": "https://d"}))
+    gate = make_gate(tmp_path, {"discovery.ai_agents.read_manifests": {"paths": [str(tmp_path)]}})
+    assert AIAgents({"manifest_dirs": [{"path": str(tmp_path), "max_depth": 1}]}, gate).discover()[0] == []
+    ws, _ = AIAgents({"manifest_dirs": [{"path": str(tmp_path), "max_depth": 3, "label": "demo"}]}, gate).discover()
+    assert [(w.name, w.attributes["label"]) for w in ws] == [("Deep", "demo")]
+    with pytest.raises(ConfigError, match="max_depth"):
+        AIAgents({"manifest_dirs": [{"path": str(tmp_path)}]}, gate)
+    with pytest.raises(ConfigError, match="unknown key"):
+        AIAgents({"manifest_dirs": [{"path": str(tmp_path), "max_depth": 1, "depth": 2}]}, gate)

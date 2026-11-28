@@ -1,5 +1,5 @@
 {
-  "_comment": "Tool policy for examples/laptop.config.json: deny by default. Allows reading only Claude Desktop's config folder and Claude Code's ~/.claude.json, listing processes with ps, the local SPIFFE server, identities under /ai-agent, /mcp, /agent/job-search-agent and /mac, device attestation, revocation and delegation grants (at most 60 minutes). Kubernetes, Docker, network scans, A2A probes and the LLM are blocked.",
+  "_comment": "Tool policy for examples/laptop.config.json: deny by default. Allows reading only Claude Desktop's config folder, Claude Code's ~/.claude.json and the demo fixtures in examples/manifests, listing processes with ps, the local SPIFFE server, identities under /ai-agent, /mcp, /agent/job-search-agent and /mac, device attestation, revocation and delegation grants (at most 60 minutes). Kubernetes, Docker, network scans, A2A probes and the LLM are blocked.",
   "version": 1,
   "default": "deny",
   "trace": {
@@ -9,7 +9,8 @@
     "discovery.ai_agents.read_manifests": {
       "paths": [
         "~/Library/Application Support/Claude",
-        "~/.claude.json"
+        "~/.claude.json",
+        "manifests"
       ]
     },
     "server.connect": {

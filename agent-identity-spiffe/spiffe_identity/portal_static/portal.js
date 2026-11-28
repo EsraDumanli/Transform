@@ -150,6 +150,7 @@ function renderWorkloads(proposals, statuses) {
     tr.setAttribute("aria-expanded", open.has(p.id));
 
     const name = el("td", {}, el("span", { cls: "chev", text: "▸" }), el("span", { cls: "wname", text: ` ${p.workload.name}` }));
+    if (p.workload.attributes.label) name.append(" ", el("span", { cls: `wlabel ${p.workload.attributes.label === "demo" ? "demo" : ""}`, text: p.workload.attributes.label.toUpperCase(), title: p.workload.attributes.label === "demo" ? "Made-up demo agent from examples/manifests, not a real agent on this computer" : `Label: ${p.workload.attributes.label}` }));
     const idCell = el("td", { cls: "id mono" });
     if (p.spiffe_id) {
       idCell.append(document.createTextNode(p.spiffe_id));

@@ -61,7 +61,7 @@ examples/
   manifests/           DEMO FIXTURES: one A2A agent card, one MCP config (made up)
 scripts/               setup.sh (venv + install), demo.sh (full flow in the terminal), portal.sh (server + portal),
                        dev_fake_node_agent.py (TEST ONLY: software-key stand-in for the Mac node agent)
-tests/                 131 tests, no network access needed
+tests/                 132 tests, no network access needed
 ```
 
 ## Quickstart (demo, localhost only)
@@ -131,6 +131,7 @@ Then click **Scan now**. `examples/laptop.config.json` looks in:
 |---|---|
 | `~/Library/Application Support/Claude/claude_desktop_config.json` | Claude Desktop's MCP servers |
 | `~/.claude.json` | Claude Code's MCP servers, both user-wide and per-project (shown with the project path) |
+| `examples/manifests/` | the made-up demo agents, shown with a **DEMO** tag so they can't be confused with real ones |
 | Running processes (`ps`) | Python / Node / `npx` / `uvx` processes whose command line contains `app.py`, `mcp` or `modelcontextprotocol`, e.g. the Job Search Agent started with `python app.py`, or running MCP servers |
 
 **Notes:**

@@ -45,19 +45,42 @@ class AIAgents:
         self._open = opener or _gated_opener(gate).open
         if not self.dirs and not self.files and not self.urls:
             raise ConfigError("ai-agents: set manifest_dirs, manifest_files and/or a2a_urls; nothing is scanned by default")
-        if self.dirs and not (isinstance(self.max_depth, int) and self.max_depth > 0):
-            raise ConfigError("ai-agents: max_depth must be a positive integer when manifest_dirs is set")
+        # Each manifest_dirs entry is a path string (uses max_depth) or
+        # {"path": ..., "max_depth": N, "label": "demo"}: its own depth, and a label
+        # added to everything found there (e.g. to mark made-up demo agents).
+        norm = []
+        for entry in self.dirs:
+            if isinstance(entry, str):
+                path, depth, label = entry, self.max_depth, ""
+            elif isinstance(entry, dict):
+                extra = set(entry) - {"path", "max_depth", "label"}
+                if extra:
+                    raise ConfigError(f"ai-agents: manifest_dirs entry has unknown key(s) {sorted(extra)}")
+                path, depth, label = entry.get("path"), entry.get("max_depth", self.max_depth), entry.get("label", "")
+                if not isinstance(path, str) or not path:
+                    raise ConfigError("ai-agents: each manifest_dirs object needs a 'path'")
+                if not isinstance(label, str) or len(label) > 40:
+                    raise ConfigError("ai-agents: 'label' must be a short string")
+            else:
+                raise ConfigError("ai-agents: manifest_dirs entries must be paths or {path, max_depth, label} objects")
+            if not (isinstance(depth, int) and not isinstance(depth, bool) and depth > 0):
+                raise ConfigError(f"ai-agents: max_depth must be a positive integer for {path} (per entry or overall)")
+            norm.append((path, depth, label))
+        self.dirs = norm
         if self.urls and not (isinstance(self.timeout, (int, float)) and self.timeout > 0):
             raise ConfigError("ai-agents: timeout_seconds must be > 0 when a2a_urls is set")
 
     def discover(self) -> tuple[list[Workload], list[str]]:
         out: list[Workload] = []
         warns: list[str] = []
-        for d in self.dirs:
+        for d, depth, label in self.dirs:
             root = Path(d).expanduser()
             try:
                 with self.gate.action("discovery.ai_agents.read_manifests", path=str(root)) as summary:
-                    ws, w = self._walk(root)
+                    ws, w = self._walk(root, depth)
+                    for wl in ws:
+                        if label:
+                            wl.attributes["label"] = label
                     summary["workloads"] = len(ws)
             except ToolDenied as e:
                 warns.append(f"ai-agents: {e}")
@@ -91,7 +114,7 @@ class AIAgents:
 
     # ---- manifests ------------------------------------------------------------
 
-    def _walk(self, root: Path) -> tuple[list[Workload], list[str]]:
+    def _walk(self, root: Path, max_depth: int) -> tuple[list[Workload], list[str]]:
         out, warns = [], []
         if not root.is_dir():
             return out, [f"ai-agents: {root} is not a directory"]
@@ -102,7 +125,7 @@ class AIAgents:
 
         for dirpath, dirnames, filenames in os.walk(root, onerror=onerror):
             depth = len(Path(dirpath).resolve().parts) - base_depth
-            dirnames[:] = [] if depth >= self.max_depth - 1 else [d for d in dirnames if d not in SKIP_DIRS]
+            dirnames[:] = [] if depth >= max_depth - 1 else [d for d in dirnames if d not in SKIP_DIRS]
             for fn in filenames:
                 p = Path(dirpath) / fn
                 if fn not in A2A_NAMES and fn not in MCP_NAMES:

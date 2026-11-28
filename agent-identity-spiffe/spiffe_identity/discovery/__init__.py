@@ -41,7 +41,8 @@ def build(cfg: dict, gate, resolve=lambda p: p) -> list[Discoverer]:
         c = dict(c)
         for key in _PATH_KEYS.get(name, ()):
             if isinstance(c.get(key), list):
-                c[key] = [resolve(v) for v in c[key]]
+                c[key] = [{**v, "path": resolve(v["path"])} if isinstance(v, dict) and isinstance(v.get("path"), str)
+                          else resolve(v) if isinstance(v, str) else v for v in c[key]]
             elif c.get(key):
                 c[key] = resolve(c[key])
         out.append(SOURCES[name](c, gate))

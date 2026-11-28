@@ -1,5 +1,5 @@
 {
-  "_comment": "Scans THIS computer for real agents: Claude Desktop's MCP config, Claude Code's ~/.claude.json (user and per-project MCP servers), and running processes that look like agents or MCP servers (including the Job Search Agent started with `python app.py`). No demo fixtures. Uses its own data folder (.data/laptop). The trust domain 'demo.local' is kept so the policy prefixes match; change both together if you want another name.",
+  "_comment": "Scans THIS computer for real agents: Claude Desktop's MCP config, Claude Code's ~/.claude.json (user and per-project MCP servers), and running processes that look like agents or MCP servers (including the Job Search Agent started with `python app.py`). It also includes the made-up demo agents from examples/manifests, labelled 'demo' so they show a DEMO tag in the portal. Uses its own data folder (.data/laptop). The trust domain 'demo.local' is kept so the policy prefixes match; change both together if you want another name.",
   "tool_policy_file": "laptop.tool-policy.json",
   "trust_domain": "demo.local",
   "server": {
@@ -31,9 +31,16 @@
   "discovery": {
     "ai_agents": {
       "manifest_dirs": [
-        "~/Library/Application Support/Claude"
+        {
+          "path": "~/Library/Application Support/Claude",
+          "max_depth": 1
+        },
+        {
+          "path": "manifests",
+          "max_depth": 3,
+          "label": "demo"
+        }
       ],
-      "max_depth": 1,
       "manifest_files": [
         "~/.claude.json"
       ]

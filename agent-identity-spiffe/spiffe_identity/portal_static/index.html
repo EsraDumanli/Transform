@@ -55,18 +55,41 @@
       </div>
       <div class="table-wrap">
         <table class="grid" id="wl-table">
-          <thead><tr><th>Workload</th><th class="hide-sm">Kind</th><th class="hide-sm">Source</th><th>Identity</th><th>Status</th><th class="act">Action</th></tr></thead>
+          <thead><tr><th>Workload</th><th class="hide-sm">Kind</th><th class="hide-sm">Source</th><th>Identity</th><th>Confidence</th><th>Status</th><th class="act">Action</th></tr></thead>
           <tbody id="wl-body"></tbody>
         </table>
       </div>
       <p id="wl-empty" class="empty" hidden></p>
     </section>
 
+    <section aria-labelledby="dev-h">
+      <h2 id="dev-h">Devices (Secure Enclave enrollment)</h2>
+      <div class="table-wrap">
+        <table class="grid">
+          <thead><tr><th>Device</th><th>Status</th><th class="hide-sm">Reported facts (not proven)</th><th class="hide-sm">Enrolled</th><th>Decided by</th><th class="act">Action</th></tr></thead>
+          <tbody id="dev-body"></tbody>
+        </table>
+      </div>
+      <p id="dev-empty" class="empty" hidden></p>
+      <p class="fine">Approve a device only if the code shown here matches the one printed by <code>spiffe-node-agent enroll</code> on that Mac. Without MDM, the server can't verify that a key is in the Secure Enclave; your approval is what it relies on.</p>
+    </section>
+
+    <section aria-labelledby="bld-h">
+      <h2 id="bld-h">New builds awaiting approval</h2>
+      <div class="table-wrap">
+        <table class="grid">
+          <thead><tr><th>Program</th><th>Identity</th><th class="hide-sm">Device</th><th>Build change</th><th class="hide-sm">First seen</th><th class="act">Action</th></tr></thead>
+          <tbody id="bld-body"></tbody>
+        </table>
+      </div>
+      <p id="bld-empty" class="empty" hidden></p>
+    </section>
+
     <section aria-labelledby="en-h">
       <h2 id="en-h">Registered identities on the SPIFFE server</h2>
       <div class="table-wrap">
         <table class="grid">
-          <thead><tr><th>SPIFFE ID</th><th class="hide-sm">Source</th><th class="hide-sm">Assigned by</th><th>Approved by</th><th>Registered</th><th class="act">Action</th></tr></thead>
+          <thead><tr><th>SPIFFE ID</th><th>Confidence</th><th class="hide-sm">Source</th><th class="hide-sm">Assigned by</th><th>Approved by</th><th>Registered</th><th class="act">Action</th></tr></thead>
           <tbody id="en-body"></tbody>
         </table>
       </div>
@@ -76,7 +99,7 @@
   </main>
 
   <template id="detail-tpl">
-    <tr class="detail"><td colspan="6"><div class="detail-grid">
+    <tr class="detail"><td colspan="7"><div class="detail-grid">
       <div><h3>Attributes</h3><table class="kv"></table></div>
       <div>
         <h3>Selectors</h3><ul class="sel"></ul>

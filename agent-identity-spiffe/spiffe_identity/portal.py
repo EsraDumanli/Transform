@@ -47,6 +47,7 @@ from importlib import resources
 
 from . import config as config_mod, pipeline
 from .client import Client, ServerError
+from .nodes import attestation_method, confidence
 from .toolpolicy import ToolDenied, ToolGate
 from .trace import TraceError
 
@@ -109,13 +110,27 @@ class Portal:
         except (ServerError, ToolDenied) as e:
             return None, str(e)
 
+    def _devices(self) -> tuple[list[dict] | None, list[dict] | None, str]:
+        if self.client is None or "server.nodes.list" not in self.gate.policy.tools:
+            return None, None, "device attestation isn't enabled in the tool policy"
+        try:
+            return self.client.list_nodes(), self.client.list_builds(), ""
+        except (ServerError, ToolDenied) as e:
+            return None, None, str(e)
+
     def state(self) -> dict:
         snap, snap_error = None, ""
         try:
             snap = pipeline.load_snapshot(self.scan_path, self.cfg["trust_domain"])
         except (ValueError, OSError) as e:
             snap_error = str(e)
+        rubric = self.gate.policy.rubric or {}
+        if snap:
+            for p in snap["proposals"]:
+                method = attestation_method(p["workload"]["selectors"])
+                p["attestation"] = {"method": method, "confidence": confidence(method, rubric)}
         entries, entries_error = self._entries()
+        nodes, builds, devices_error = self._devices()
         llm_cfg = self.cfg.get("llm") or {}
         return {
             "trust_domain": self.cfg["trust_domain"],
@@ -126,6 +141,9 @@ class Portal:
             "scan_file": self.scan_path,
             "entries": entries,
             "entries_error": entries_error,
+            "nodes": nodes,
+            "builds": builds,
+            "devices_error": devices_error,
         }
 
     # ---- actions --------------------------------------------------------------
@@ -169,6 +187,22 @@ class Portal:
         with self.gate.action("portal.revoke", entry_id=entry_id):
             self.client.delete_entry(entry_id)
         log.info("revoked entry %s", entry_id)
+        return self.state()
+
+    def device(self, node_id: str, action: str) -> dict:
+        if self.client is None:
+            raise PortalError("no SPIFFE server client configured")
+        with self.gate.action("portal.devices", node_id=node_id, action=action):
+            self.client.node_action(node_id, action, self.approver)
+        log.info("device %s: %s by %s", node_id[:8], action, self.approver)
+        return self.state()
+
+    def build(self, build_id: str, action: str) -> dict:
+        if self.client is None:
+            raise PortalError("no SPIFFE server client configured")
+        with self.gate.action("portal.builds", build_id=build_id, action=action):
+            self.client.build_action(build_id, action, self.approver)
+        log.info("build %s: %s by %s", build_id, action, self.approver)
         return self.state()
 
     # ---- HTTP -----------------------------------------------------------------
@@ -216,7 +250,8 @@ class Portal:
         except ValueError:
             return _json(400, {"error": "body must be a JSON object"})
 
-        action = {"/api/scan": "scan", "/api/approve": "approve", "/api/revoke": "revoke"}.get(path)
+        action = {"/api/scan": "scan", "/api/approve": "approve", "/api/revoke": "revoke",
+                  "/api/device": "devices", "/api/build": "builds"}.get(path)
         if action is None:
             return _json(404, {"error": "not found"})
         try:
@@ -225,6 +260,10 @@ class Portal:
                     return _json(200, self.scan())
                 if action == "approve":
                     return _json(200, self.approve(str(req.get("proposal_id", ""))))
+                if action == "devices":
+                    return _json(200, self.device(str(req.get("node_id", "")), str(req.get("action", ""))))
+                if action == "builds":
+                    return _json(200, self.build(str(req.get("build_id", "")), str(req.get("action", ""))))
                 return _json(200, self.revoke(str(req.get("entry_id", ""))))
         except ToolDenied as e:
             return _json(403, {"error": str(e)})

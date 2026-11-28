@@ -164,6 +164,12 @@ def _spiffe_prefixes(v, key):
     return v
 
 
+def _bool(v, key):
+    if not isinstance(v, bool):
+        raise ToolPolicyError(f"{key} must be true or false")
+    return v
+
+
 def _attr_list(v, key):
     if not isinstance(v, list) or not all(isinstance(x, str) and x for x in v):
         raise ToolPolicyError(f"{key} must be a list of attribute names (it may be empty)")
@@ -185,9 +191,17 @@ TOOLS: dict[str, dict] = {
     "server.entries.delete": {},
     "server.svid.x509": {"required": {"spiffe_id_prefixes": _spiffe_prefixes}},
     "server.svid.jwt": {"required": {"spiffe_id_prefixes": _spiffe_prefixes, "audiences": _str_list}},
+    "server.nodes.enroll": {"required": {"max_pending": _pos_int}},
+    "server.nodes.list": {},
+    "server.nodes.manage": {},
+    "server.nodes.challenge": {},
+    "server.svid.attested": {"required": {"spiffe_id_prefixes": _spiffe_prefixes, "max_ttl_minutes": _pos_int,
+                                          "require_hardened_runtime": _bool}},
     "portal.scan": {},
     "portal.approve": {},
     "portal.revoke": {},
+    "portal.devices": {},
+    "portal.builds": {},
 }
 
 
@@ -199,6 +213,7 @@ class ToolPolicy:
     sha256: str
     trace_file: str
     tools: dict[str, dict]      # tool -> validated limits
+    rubric: dict[str, str] = None   # attestation method -> high|medium|low (unlisted = low)
 
     @classmethod
     def load(cls, path: str | os.PathLike) -> "ToolPolicy":
@@ -219,7 +234,7 @@ class ToolPolicy:
     def from_dict(cls, data: dict, path: str = "<memory>", sha256: str = "") -> "ToolPolicy":
         if not isinstance(data, dict):
             raise ToolPolicyError("tool policy must be a JSON object")
-        unknown = set(data) - {"version", "default", "trace", "tools", "_comment"}
+        unknown = set(data) - {"version", "default", "trace", "tools", "attestation_rubric", "_comment"}
         if unknown:
             raise ToolPolicyError(f"unknown top-level key(s) in tool policy: {sorted(unknown)}")
         if data.get("version") != 1:
@@ -262,7 +277,8 @@ class ToolPolicy:
             if name == "discovery.processes.read" and "proc_roots" in checked:
                 checked["proc_roots"] = [str(Path(x).expanduser() if Path(x).expanduser().is_absolute() else base / x) for x in checked["proc_roots"]]
             tools[name] = checked
-        return cls(path=path, sha256=sha256, trace_file=str(trace_file), tools=tools)
+        rubric = _rubric(data.get("attestation_rubric", {}))
+        return cls(path=path, sha256=sha256, trace_file=str(trace_file), tools=tools, rubric=rubric)
 
     # ---- decisions --------------------------------------------------------------
 
@@ -277,6 +293,22 @@ class ToolPolicy:
             return _CHECKS.get(tool, _no_limits)(lim, args, calls_so_far)
         except (KeyError, ValueError, TypeError) as e:
             return f"could not check the request against the policy ({type(e).__name__}: {e})"
+
+
+def _rubric(raw) -> dict[str, str]:
+    from .nodes import CONFIDENCE_LEVELS, METHODS
+    if not isinstance(raw, dict):
+        raise ToolPolicyError("attestation_rubric must be an object of method -> high|medium|low")
+    out = {}
+    for method, level in raw.items():
+        if method == "_comment":
+            continue
+        if method not in METHODS:
+            raise ToolPolicyError(f"attestation_rubric: unknown method {method!r}; known: {list(METHODS)}")
+        if level not in CONFIDENCE_LEVELS:
+            raise ToolPolicyError(f"attestation_rubric.{method} must be one of {list(CONFIDENCE_LEVELS)}")
+        out[method] = level
+    return out
 
 
 def _no_limits(lim, args, n):
@@ -355,7 +387,26 @@ def _check_jwt(lim, a, n):
     return f"audience(s) {bad} are not allowed" if bad else None
 
 
+def _check_attested(lim, a, n):
+    r = _check_spiffe(lim, a, n)
+    if r:
+        return r
+    if a["ttl_minutes"] > lim["max_ttl_minutes"]:
+        return f"ttl {a['ttl_minutes']} min exceeds the policy's {lim['max_ttl_minutes']}"
+    if lim["require_hardened_runtime"] and not a["hardened_runtime"]:
+        return "the workload doesn't run with Hardened Runtime, which the policy requires"
+    return None
+
+
+def _check_enroll(lim, a, n):
+    if a["pending"] >= lim["max_pending"]:
+        return f"max_pending ({lim['max_pending']}) enrollments already waiting"
+    return None
+
+
 _CHECKS = {
+    "server.svid.attested": _check_attested,
+    "server.nodes.enroll": _check_enroll,
     "discovery.ai_agents.read_manifests": _check_paths,
     "discovery.ai_agents.probe_a2a": _check_probe,
     "discovery.kubernetes.list_pods": _check_k8s,

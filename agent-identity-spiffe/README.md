@@ -44,6 +44,7 @@ spiffe_identity/
   classifier.py        optional Claude proposer for workloads no rule matched
   approval.py          the human approval gate
   pipeline.py          discover -> policy -> LLM, and the saved-scan snapshot (shared by CLI + portal)
+  nodes.py             device (node) attestation: enrolled keys, one-time challenges, evidence, confidence
   toolpolicy.py        deny-by-default tool policy: the single gate every action passes through
   trace.py             the trace file: every decision, result, run and log line as JSON
   portal.py            local web portal (localhost only): view, scan, approve, revoke
@@ -56,8 +57,9 @@ examples/
   tool-policy.template.json every tool and limit, with <placeholders>
   config.template.json every option, with <placeholders> you fill in
   manifests/           DEMO FIXTURES: one A2A agent card, one MCP config (made up)
-scripts/               setup.sh (venv + install), demo.sh (full flow in the terminal), portal.sh (server + portal)
-tests/                 92 tests, no network access needed
+scripts/               setup.sh (venv + install), demo.sh (full flow in the terminal), portal.sh (server + portal),
+                       dev_fake_node_agent.py (TEST ONLY: software-key stand-in for the Mac node agent)
+tests/                 113 tests, no network access needed
 ```
 
 ## Quickstart (demo, localhost only)
@@ -233,6 +235,26 @@ agent-discovery trace --config examples/demo.config.json --trace-id cb0001d5
 ```
 
 Other filters: `--tool server.`, `--component portal`, `--last 50`, and `--json` for raw lines. Every command also prints its `trace id` when it starts, so you can look that run up afterwards.
+
+## Device attestation (Secure Enclave, Phase 1)
+
+Design: [ATTESTATION-MACOS.md](ATTESTATION-MACOS.md). The **server side** is implemented. The **Mac node agent** (Swift, Secure Enclave, Touch ID at enrollment) comes in Phase 2, on a Mac.
+
+- **Devices enroll** with a P-256 public key (admin token) and start **pending**. You approve them in the portal's **Devices** section after comparing the short code.
+- **Approved devices get identities** by signing a one-time challenge plus the workload's code-signature evidence. The server issues a **30-minute** SVID only if a registration entry for that device and program matches.
+- **New builds:** a new build of an approved program (new cdhash) is held under **New builds awaiting approval** until you approve it.
+- **Confidence badges** (High / Medium / Low) come from the `attestation_rubric` in the locked tool policy. Unlisted methods are Low. With no MDM or Apple attestation, nothing is High. Your own client verified through the agent is **Medium**.
+- **New tools:** `server.nodes.enroll` (`max_pending`), `server.nodes.list`, `server.nodes.manage`, `server.nodes.challenge`, `server.svid.attested` (`spiffe_id_prefixes`, `max_ttl_minutes`, `require_hardened_runtime`), `portal.devices`, `portal.builds`.
+
+**Trying the server side without a Mac (test only):**
+```bash
+python scripts/dev_fake_node_agent.py enroll --config examples/demo.config.json --key out/fake-node.pem
+```
+Approve the device in the portal, add a registration entry for it, then:
+```bash
+python scripts/dev_fake_node_agent.py svid --config examples/demo.config.json --key out/fake-node.pem --spiffe-id spiffe://demo.local/mac/mcp-client --signing-id com.example.mcp-client --cdhash aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --hardened-runtime --path /usr/local/bin/mcp-client --out out/attested
+```
+The fake agent uses a **software key on disk**, not the Secure Enclave, and its "evidence" is whatever you type. The portal marks its devices **TEST KEY** in red. Never approve one for anything real.
 
 ## macOS notes
 

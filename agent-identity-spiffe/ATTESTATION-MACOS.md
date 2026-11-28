@@ -1,8 +1,8 @@
-# macOS Secure Enclave Attestation for Laptops and MCP Clients: Design Draft (v0.2, for review)
+# macOS Secure Enclave Attestation for Laptops and MCP Clients: Design (v0.3; Phase 1 implemented)
 
 **Goal:** before the SPIFFE server issues an identity (SVID) to an MCP client on your Mac, it must have evidence of **which Mac** is asking (device) and **which program** on it is asking (workload). Under your current constraints, the strongest result is **Medium** confidence (decision D1).
 
-**Status:** design only, nothing built. Items marked **[OPEN]** need your decision ([section 10](#10-open-questions)).
+**Status:** Phase 1 (the server side) is **implemented** on the `SPIFFE-Changes` branch: enrollment, approval, challenges, attested issuance, build approvals, badges, policy tools, trace. It's tested with a software key standing in for the Enclave (`scripts/dev_fake_node_agent.py`, test only). Phases 0 (remaining checks), 2, 3 and 4 need your Mac. Items marked **[OPEN]** need your decision ([section 10](#10-open-questions)).
 
 ## 0. Decisions made (v0.2)
 
@@ -11,6 +11,10 @@
 | D1 | Q1: does approved enrollment count as High? | **No: Medium.** | Without an Apple-signed attestation (unavailable without MDM or a Developer membership), no method reaches **High**. Your own attested client is **Medium**. **High** stays reserved in the rubric with nothing mapped to it, for a future vendor-attested method. |
 | D2 | Q2: what language for your own client and the node agent? | **Swift** (you asked for the best option; this is my recommendation, with reasons in section 5). | The node agent and your own MCP client (or its signed helper) are written in Swift. The SPIFFE server and portal stay in Python. |
 | D3 | Q3: when is Touch ID required? | **At enrollment only.** | Enrolling the Mac requires your fingerprint on the Mac itself, so malware can't silently enroll a device. Day-to-day identity issuance doesn't prompt (section 4.1). |
+| D5 | Q8: what do the badges mean? | **Weaker methods are Low.** | Claude Desktop seen from outside, and device-only, are **Low**. **Medium** means the device and the program were both verified, or a trusted platform observation (Docker image hash, Kubernetes service account, process path). |
+| D6 | Q4: identity lifetime | **30 minutes.** | `attested_svid_ttl_minutes: 30` in the server config, capped by `max_ttl_minutes: 30` in the tool policy. |
+| D7 | Q5: install the agent as a background service | **OK.** | A launchd daemon under its own system user, installed with your admin password once. |
+| D8 | Q7: third-party apps | **Claude Desktop only.** | Phase 4 targets Claude Desktop launching your stdio MCP servers. Cursor is out of scope. |
 | D4 | Q6: re-approve every rebuild of your client? | **Yes.** | Each new build's code fingerprint (cdhash) must be approved in the portal before it can get an identity. The old build's entry stays until you revoke it (section 5). |
  Items marked **[VERIFY]** are Apple-platform behaviours I'm not certain of. They must be confirmed on your Mac in Phase 0 before anything else is built. This cloud session runs on Linux and can't test any macOS-specific part.
 
@@ -168,14 +172,58 @@ Nothing is wired to real infrastructure until Phase 0's findings confirm the pla
 
 **Still open:**
 
-4. **Q4: SVID lifetime** for attested identities, e.g. 15 minutes with automatic renewal through the agent? Shorter limits damage from a compromise; longer reduces traffic.
-5. **Q5: Installing the agent** as a launchd daemon under its own system user needs your admin password once (and Touch ID at enrollment, per D3). Acceptable?
-7. **Q7: Third-party apps to support first:** Claude Desktop, Cursor, or both? And which of your MCP servers would they launch?
+All questions so far are answered (D1–D8). **Phase 0 status:** Touch ID from the enrollment command is **confirmed** on your Mac. The other [VERIFY] items are still to check before Phase 2.
 
-**New, from your decisions:**
+**Answered (kept for reference):**
 
-8. **Q8: Keeping the badges meaningful.** With D1, your fully attested client is **Medium**, the same as Claude Desktop seen from outside, and the same as a Docker image ID. Options:
+8. **Q8: Keeping the badges meaningful** (→ D5). With D1, your fully attested client is **Medium**, the same as Claude Desktop seen from outside, and the same as a Docker image ID. Options:
    - (a) keep these at **Medium** and rely on the badge's hover text (method and reason) to tell them apart,
    - (b) lower the weaker ones (third-party seen from outside, device-only) to **Low**, so **Medium** means "device and program both verified".
 
    I lean towards (b), because a badge people trust at a glance should mean one thing.
+
+## 11. Wire protocol (implemented in Phase 1, for the Swift agent to follow)
+
+All requests are HTTPS to the SPIFFE server, verified against its `bundle.pem`. JSON bodies.
+
+**Enroll**, from the user-session enrollment command. It's authenticated with the **admin token**, and the result is still only *pending*:
+```
+POST /v1/nodes/enroll           Authorization: Bearer <admin token>
+{"public_key": "<PEM SubjectPublicKeyInfo, EC P-256>",
+ "facts": {"hostname": "...", "model": "...", "macos_version": "...", "touch_id_confirmed": true}}
+→ 201 {"id": "<sha256 of the DER public key, hex>", "short_code": "ABCD-1234", "status": "pending", ...}
+```
+- **Facts** are reported, not proven. Allowed keys: `hostname`, `model`, `macos_version`, `touch_id_confirmed`, `software_key_test_only`. Anything else is rejected.
+- **Approval:** a person approves in the portal after comparing `short_code` with what the command printed.
+
+**Challenge.** No admin token is needed; the node must be **approved**:
+```
+POST /v1/node/challenge   {"node_id": "<id>"}
+→ 200 {"nonce": "<random>", "expires_at": <unix seconds>}     (single use, 60 s, bound to this node)
+```
+
+**Attested SVID.** No admin token; the request is signed with the **device key**:
+```
+POST /v1/node/svid
+{"request": {"node_id": "<id>", "nonce": "<from challenge>", "spiffe_id": "spiffe://<td>/mac/...",
+             "csr": "<PEM CSR for the workload's own key>",
+             "workload": {"signing_id": "com.example.mcp-client", "team_id": null | "ABCDE12345",
+                          "cdhash": "<40 lowercase hex>", "hardened_runtime": true,
+                          "path": "/absolute/path/to/binary",
+                          "parent": null | {"signing_id": "...", "team_id": "...", "cdhash": "..."}}},
+ "signature": "<base64 DER ECDSA-SHA256 over canonical_json(request)>"}
+→ 200 {"svid": "<PEM>", "bundle": "<PEM>", "ttl_minutes": 30,
+       "attestation": {"method": "macos-se-node+codesign", "confidence": "medium"}}
+→ 403 {"error": "...new build...", "build_id": "..."}   when only the cdhash differs from an approved entry (D4)
+```
+- **`canonical_json`:** keys sorted, no whitespace (`","` and `":"` separators), UTF-8, non-ASCII not escaped. Both sides must produce identical bytes. The Python reference is `spiffe_identity/nodes.py: canonical_json`.
+- **Server checks, in order:**
+  1. the node is approved,
+  2. the signature verifies against the enrolled key,
+  3. the nonce is valid, unused and belongs to this node,
+  4. the evidence is valid (unknown fields rejected),
+  5. a registration entry for that SPIFFE ID contains `node:id:<this node>`, and **all** its selectors appear in the selectors the server derives from the evidence,
+  6. the tool policy allows `server.svid.attested`: prefix, TTL, Hardened Runtime.
+- **Trace:** every failure is a `DENY` event with the reason, never key material.
+
+**Selectors derived from evidence** (by the server, never sent by the caller): `node:id:`, `macos:signing_id:`, `macos:cdhash:`, `macos:hardened_runtime:true|false`, `macos:team_id:` (if present), and `macos:parent_signing_id:`, `macos:parent_team_id:`, `macos:parent_cdhash:` (if a parent was given).

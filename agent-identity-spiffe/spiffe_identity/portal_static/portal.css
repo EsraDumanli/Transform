@@ -138,6 +138,13 @@ tr.row.open .chev { transform: rotate(90deg); }
 .pill.pending { background: var(--warn-bg); color: var(--warn); }
 .pill.unassigned, .pill.unknown { background: var(--none-bg); color: var(--none); }
 .pill.llm { background: var(--warn-bg); color: var(--warn); font-weight: 500; }
+.conf { display: inline-block; font-size: 12px; font-weight: 700; padding: 1px 8px; border-radius: 999px; white-space: nowrap; cursor: help; }
+.conf-high { background: var(--ok-bg); color: var(--ok); }
+.conf-medium { background: var(--warn-bg); color: var(--warn); }
+.conf-low { background: var(--none-bg); color: var(--none); }
+.conf-na { background: transparent; color: var(--muted); font-weight: 500; border: 1px dashed var(--line); }
+.testkey { color: var(--bad); font-weight: 700; }
+.code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-weight: 700; letter-spacing: .05em; }
 .tag { display: inline-block; font-size: 12px; padding: 1px 7px; border-radius: 5px; background: var(--code-bg); color: var(--muted); }
 
 tr.detail td { background: var(--bg); }

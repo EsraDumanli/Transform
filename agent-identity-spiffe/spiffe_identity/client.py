@@ -74,6 +74,26 @@ class Client:
             raise ServerError("invalid entry id")
         return self._call("server.entries.delete", "DELETE", f"/v1/entries/{entry_id}", entry_id=entry_id)
 
+    # ---- devices (node attestation) ------------------------------------------------
+
+    def list_nodes(self) -> list[dict]:
+        return self._call("server.nodes.list", "GET", "/v1/nodes")
+
+    def node_action(self, node_id: str, action: str, decided_by: str) -> dict:
+        if not node_id.isalnum() or action not in ("approve", "block", "revoke"):
+            raise ServerError("invalid node id or action")
+        return self._call("server.nodes.manage", "POST", f"/v1/nodes/{node_id}/{action}", {"decided_by": decided_by},
+                          node_id=node_id, action=action, decided_by=decided_by)
+
+    def list_builds(self) -> list[dict]:
+        return self._call("server.nodes.list", "GET", "/v1/builds")
+
+    def build_action(self, build_id: str, action: str, decided_by: str) -> dict:
+        if not build_id.isalnum() or action not in ("approve", "reject"):
+            raise ServerError("invalid build id or action")
+        return self._call("server.nodes.manage", "POST", f"/v1/builds/{build_id}/{action}", {"decided_by": decided_by},
+                          build_id=build_id, action=action, decided_by=decided_by)
+
     def list_entries(self) -> list[dict]:
         return self._call("server.entries.list", "GET", "/v1/entries")
 

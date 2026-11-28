@@ -51,6 +51,14 @@ function statusOf(p) {
 
 // ---- rendering ----------------------------------------------------------------
 
+const LEVELS = { high: "High", medium: "Medium", low: "Low" };
+
+function badge(att) {
+  if (!att || !att.confidence) return el("span", { cls: "conf conf-na", text: "Not assessed", title: "Registered before confidence was recorded" });
+  return el("span", { cls: `conf conf-${att.confidence}`, text: LEVELS[att.confidence] || att.confidence,
+    title: `Method: ${att.method}. Confidence comes from the rubric in the locked tool policy; unlisted methods are Low.` });
+}
+
 function render() {
   $("td").textContent = state.trust_domain;
   $("approver").textContent = state.approver;
@@ -72,6 +80,8 @@ function render() {
   renderSources(scan);
   renderKindFilter(proposals);
   renderWorkloads(proposals, statuses);
+  renderDevices();
+  renderBuilds();
   renderEntries(proposals);
 }
 
@@ -160,7 +170,7 @@ function renderWorkloads(proposals, statuses) {
       act.append(b);
     }
 
-    tr.append(name, el("td", { cls: "hide-sm" }, el("span", { cls: "tag", text: p.workload.kind })), el("td", { cls: "hide-sm", text: p.workload.source }), idCell, statusCell, act);
+    tr.append(name, el("td", { cls: "hide-sm" }, el("span", { cls: "tag", text: p.workload.kind })), el("td", { cls: "hide-sm", text: p.workload.source }), idCell, el("td", {}, badge(p.attestation)), statusCell, act);
     const toggle = () => { open.has(p.id) ? open.delete(p.id) : open.add(p.id); render(); };
     tr.addEventListener("click", toggle);
     tr.addEventListener("keydown", (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); toggle(); } });
@@ -213,8 +223,82 @@ function renderEntries(proposals) {
     const b = el("button", { cls: "btn small danger", text: "Revoke" });
     b.type = "button";
     b.addEventListener("click", () => revoke(e, b));
-    body.append(el("tr", {}, idCell, el("td", { cls: "hide-sm", text: e.source || "—" }), el("td", { cls: "hide-sm", text: e.assigned_by || "—" }),
+    body.append(el("tr", {}, idCell, el("td", {}, badge(e.extra && e.extra.attestation)), el("td", { cls: "hide-sm", text: e.source || "—" }), el("td", { cls: "hide-sm", text: e.assigned_by || "—" }),
       el("td", { text: e.approved_by }), el("td", { text: new Date(e.created_at).toLocaleString() }), el("td", { cls: "act" }, b)));
+  }
+}
+
+function factsCell(facts) {
+  const td = el("td", { cls: "hide-sm" });
+  if (facts.software_key_test_only) td.append(el("div", { cls: "testkey", text: "TEST KEY: software, not Secure Enclave" }));
+  const parts = [];
+  if (facts.hostname) parts.push(facts.hostname);
+  if (facts.model) parts.push(facts.model);
+  if (facts.macos_version) parts.push(`macOS ${facts.macos_version}`);
+  if ("touch_id_confirmed" in facts) parts.push(facts.touch_id_confirmed ? "Touch ID at enrollment" : "no Touch ID");
+  td.append(el("span", { text: parts.join(" · ") || "—" }));
+  return td;
+}
+
+function renderDevices() {
+  const body = $("dev-body"), empty = $("dev-empty");
+  body.replaceChildren();
+  if (!state.nodes) { empty.hidden = false; empty.textContent = state.devices_error || "Devices unavailable."; return; }
+  empty.hidden = state.nodes.length > 0;
+  empty.textContent = "No devices have enrolled yet. Run spiffe-node-agent enroll on a Mac.";
+  const statusPill = { pending: "pending", approved: "registered", blocked: "unassigned", revoked: "unassigned" };
+  for (const n of state.nodes) {
+    const act = el("td", { cls: "act" });
+    const button = (label, cls, action, question) => {
+      const b = el("button", { cls: `btn small ${cls}`, text: label });
+      b.type = "button";
+      b.addEventListener("click", async () => {
+        if (!confirm(question)) return;
+        if (await run(b, "Working…", () => api("/api/device", { node_id: n.id, action }))) banner(`Device ${n.short_code}: ${action}`, "info");
+      });
+      act.append(b, " ");
+    };
+    if (n.status === "pending") {
+      button("Approve", "primary", "approve", `Approve device ${n.short_code}?\n\nOnly approve if this code matches exactly what spiffe-node-agent enroll printed on the Mac.\n\nIt will be recorded as approved by ${state.approver}.`);
+      button("Block", "danger", "block", `Block device ${n.short_code}? It won't be able to get identities.`);
+    } else if (n.status === "approved") {
+      button("Revoke", "danger", "revoke", `Revoke device ${n.short_code}?\n\nIt stops getting new identities immediately. Identities already issued stay valid until they expire (30 minutes at most with the current policy).`);
+    }
+    body.append(el("tr", {},
+      el("td", {}, el("span", { cls: "code", text: n.short_code }), el("span", { cls: "reason mono", text: n.id.slice(0, 16) + "…" })),
+      el("td", {}, el("span", { cls: `pill ${statusPill[n.status] || "unknown"}`, text: n.status })),
+      factsCell(n.facts || {}),
+      el("td", { cls: "hide-sm", text: new Date(n.enrolled_at).toLocaleString() }),
+      el("td", { text: n.decided_by || "—" }), act));
+  }
+}
+
+function renderBuilds() {
+  const body = $("bld-body"), empty = $("bld-empty");
+  body.replaceChildren();
+  if (!state.builds) { empty.hidden = false; empty.textContent = state.devices_error || "Builds unavailable."; return; }
+  empty.hidden = state.builds.length > 0;
+  empty.textContent = "No new builds waiting.";
+  const shortCode = (id) => `${id.slice(0, 4)}-${id.slice(4, 8)}`.toUpperCase();
+  for (const b of state.builds) {
+    const act = el("td", { cls: "act" });
+    for (const [label, cls, action] of [["Approve", "primary", "approve"], ["Reject", "danger", "reject"]]) {
+      const btn = el("button", { cls: `btn small ${cls}`, text: label });
+      btn.type = "button";
+      btn.addEventListener("click", async () => {
+        const q = action === "approve"
+          ? `Approve the new build of ${b.signing_id}?\n\nOld build: ${b.old_cdhash}\nNew build: ${b.new_cdhash}\n\nIt will be able to get ${b.spiffe_id}. The old build keeps working until you revoke its entry.`
+          : `Reject the new build of ${b.signing_id}? It won't get an identity.`;
+        if (!confirm(q)) return;
+        if (await run(btn, "Working…", () => api("/api/build", { build_id: b.id, action }))) banner(`Build of ${b.signing_id}: ${action}`, "info");
+      });
+      act.append(btn, " ");
+    }
+    body.append(el("tr", {},
+      el("td", { cls: "mono", text: b.signing_id }), el("td", { cls: "id mono", text: b.spiffe_id }),
+      el("td", { cls: "hide-sm" }, el("span", { cls: "code", text: shortCode(b.node_id) })),
+      el("td", { cls: "mono", text: `${b.old_cdhash.slice(0, 10)}… → ${b.new_cdhash.slice(0, 10)}…`, title: `${b.old_cdhash} → ${b.new_cdhash}` }),
+      el("td", { cls: "hide-sm", text: new Date(b.first_seen).toLocaleString() }), act));
   }
 }
 

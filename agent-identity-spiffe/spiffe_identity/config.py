@@ -35,6 +35,7 @@ def load(path: str | Path) -> dict:
     except spiffeid.SpiffeIDError as e:
         raise ConfigError(f"trust_domain: {e}") from e
     cfg["_base_dir"] = str(p.resolve().parent)
+    cfg["_config_name"] = p.name
     return cfg
 
 

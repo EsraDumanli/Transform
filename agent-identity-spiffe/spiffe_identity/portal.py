@@ -147,6 +147,8 @@ class Portal:
         llm_cfg = self.cfg.get("llm") or {}
         return {
             "trust_domain": self.cfg["trust_domain"],
+            "config": self.cfg.get("_config_name", ""),
+            "sources": sorted((self.cfg.get("discovery") or {}).keys()),
             "approver": self.approver,
             "llm_enabled": bool(llm_cfg.get("enabled", False) if self.use_llm is None else self.use_llm),
             "scan": snap,

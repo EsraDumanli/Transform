@@ -63,6 +63,8 @@ function badge(att) {
 function render() {
   $("td").textContent = state.trust_domain;
   $("approver").textContent = state.approver;
+  $("cfgname").textContent = state.config || "?";
+  $("cfgsources").textContent = state.sources && state.sources.length ? `(scans: ${state.sources.join(", ")})` : "";
   const scan = state.scan;
   $("scanned").textContent = scan ? `Last scan ${new Date(scan.scanned_at).toLocaleString()}` : "No scan yet";
 
